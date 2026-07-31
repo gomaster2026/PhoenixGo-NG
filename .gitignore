@@ -1,0 +1,32 @@
+# 编译产物
+*.exe
+*.o
+*.d
+leelaz
+build/
+/build-autogtp-*
+/build-validation-*
+.vs/
+
+# 日志
+*.log
+leelaz_opencl_tuning
+
+# 训练数据
+leelaz-model*
+*.txt.gz
+data/
+training/tf/leelalogs
+training/tf/checkpoint
+training/tf/venv
+
+# 编辑器
+.vscode/settings.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 备份
+*.orig
