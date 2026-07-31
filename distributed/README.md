@@ -54,15 +54,15 @@ python distributed/weight_release.py upload --platform gitee \
 创建 Notebook → 选 **GPU T4 x2** → 输入代码:
 
 ```
-!git clone --depth 1 https://gitee.com/你的登录名/leela-zero-next
+!git clone --depth 1 https://gitee.com/ABCradio/leela-zero-next
 %cd leela-zero-next
-!pip install tensorflow==2.15.0
-!python distributed/kaggle_train.py \
-    --data-owner 你的登录名 --data-repo shuju \
-    --data-token Gitee私人令牌 \
-    --weights-path /kaggle/input/weights/phoenixgo-v1.txt.gz \
-    --selfplay-games 20
+!pip install tensorflow==2.16.1
+!python distributed/kaggle_train.py --data-owner ABCradio --data-repo shuju --data-token Gitee私人令牌 --weights-path /kaggle/input/你的数据集名/phoenixgo-v1.txt.gz --selfplay-games 10
 ```
+
+> 注意: 
+> - TensorFlow 必须是 **2.16.x**（训练代码用 TF1 风格 API，2.16 是最后完整支持 `tf.compat.v1` 的版本，且 Kaggle Python 3.12 能装）。不要装 2.17+。
+> - Notebook 里 `!` 命令**必须写在一行**，不能用 `\` 换行。
 
 - chunk 从 Gitee 数据仓库 `shuju` 下载（私密仓库需要 `--data-token`）
 - 权重用 `--weights-path` 指定 Kaggle Input 里的本地文件（首次用 phoenixgo；之后用上一轮训练出的新权重）
