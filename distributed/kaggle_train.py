@@ -418,7 +418,7 @@ def main():
                         default=os.environ.get("LZ_WEIGHTS_PATH", ""),
                         help="基础权重 .txt.gz 路径（首次用，如 /kaggle/input/weights/phoenixgo-v1.txt.gz）")
     parser.add_argument("--repo",
-                        default="https://gitee.com/leela-zero-next/leela-zero-next",
+                        default="https://gitee.com/ABCradio/leela-zero-next",
                         help="仓库地址")
     parser.add_argument("--blocks", type=int, default=19,
                         help="残差块数（默认 19）")
