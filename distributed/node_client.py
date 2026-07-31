@@ -5,14 +5,15 @@ Leela Zero 节点客户端 — 贡献算力
 通过 GTP 协议驱动 leelaz 自对弈，生成 V1 格式训练数据（.gz），
 自动上传到 Gitee 数据仓库（chunks/ 目录）。
 
-权重文件从 Gitee/GitHub Release 下载（自动合并分片）。
-训练数据 chunk 上传到 Gitee 数据仓库（需要私人令牌）。
+权重文件优先级:
+  1. 本地已有权重（组织者手动发给你，放 --weights 指定的路径）
+  2. Gitee/GitHub Release 下载（自动合并分片，需 --weight-owner/--weight-repo）
 
 用法:
   python node_client.py \\
       --token 你的Gitee私人令牌 \\
-      --data-owner 数据仓库所有者 --data-repo lz-data \\
-      --weight-owner 权重仓库所有者 --weight-repo 权重仓库名 \\
+      --data-owner 组织者登录名 --data-repo shuju \\
+      --weights ./权重文件.txt.gz \\
       --leelaz ./leelaz.exe --games 20 --node-name alice
 
 Gitee 私人令牌: gitee.com → 设置 → 安全设置 → 私人令牌 → 勾选 projects 权限
@@ -292,9 +293,6 @@ def main():
     if not args.token:
         print("错误: 需要 --token（你的 Gitee 私人令牌，用于上传 chunk）")
         sys.exit(1)
-    if not (args.weight_owner and args.weight_repo):
-        print("错误: 需要 --weight-owner 和 --weight-repo（权重仓库位置）")
-        sys.exit(1)
 
     seed = args.seed or int(time.time() * 1000000) % (2 ** 31)
     weights_path = Path(args.weights)
@@ -302,9 +300,18 @@ def main():
     work_dir = Path(tempfile.mkdtemp(prefix="lz_selfplay_"))
     print(f"[node] 工作目录: {work_dir}")
 
-    if not download_weights(args.weight_platform, args.weight_owner,
-                            args.weight_repo, weights_path):
-        print("提示: 请确认组织者已经把初始权重上传到权重仓库（weight_release.py upload）")
+    # 权重获取: 优先用本地已有的权重文件（组织者手动分发）
+    if weights_path.exists() and weights_path.stat().st_size > 100_000:
+        print(f"[node] 使用本地权重: {weights_path} "
+              f"({weights_path.stat().st_size / 1e6:.1f} MB)")
+    elif args.weight_owner and args.weight_repo:
+        if not download_weights(args.weight_platform, args.weight_owner,
+                                args.weight_repo, weights_path):
+            print("提示: 请确认组织者已经把初始权重上传到权重仓库（weight_release.py upload）")
+            sys.exit(1)
+    else:
+        print("错误: 没有本地权重文件，且缺少 --weight-owner/--weight-repo")
+        print("提示: 请向组织者要权重文件，放到: " + str(weights_path))
         sys.exit(1)
 
     print(f"[node] 启动引擎: {args.leelaz}")

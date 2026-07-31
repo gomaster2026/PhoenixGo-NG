@@ -6,7 +6,7 @@
 **你需要**: 一台有 NVIDIA GPU 的电脑（CPU 也能跑），Python 3.8+，以及组织者给你的信息:
 - **Gitee 私人令牌**（`--token`，用于上传 chunk，需 `projects` 权限；因为数据仓库是私密的，下载也需要它）
 - **数据仓库位置**（`--data-owner` / `--data-repo`，即 `gitee.com/组织者登录名/shuju`）
-- **权重仓库位置**（`--weight-owner` / `--weight-repo`）
+- **权重文件**（组织者手动发给你，如 `current.txt.gz`）
 
 > 注意: 所有仓库地址里的 `--data-owner` / `--weight-owner` 填 **Gitee 登录名**（URL 里那个英文），不是中文昵称。
 > 不需要 Kaggle 账号，不需要 kaggle CLI，不需要建 Dataset。找组织者要令牌和仓库位置即可。
@@ -59,15 +59,14 @@ python distributed/node_client.py \
     --token 你的Gitee私人令牌 \
     --data-owner 组织者的gitee登录名 \
     --data-repo shuju \
-    --weight-owner 组织者的gitee登录名 \
-    --weight-repo lz-weights \
+    --weights ./current.txt.gz \
     --node-name 你的昵称 \
     --leelaz C:\path\to\leelaz.exe \
     --games 20 \
     --playouts 800
 ```
 
-脚本自动完成: **从 Gitee 下载最新权重（自动合并分片）→ 自对弈 → 每局 `dump_training` 生成训练数据 → 上传到 Gitee 数据仓库**。
+脚本自动完成: **用组织者给的权重自对弈 → 每局 `dump_training` 生成训练数据 → 上传到 Gitee 数据仓库**。
 
 参数说明:
 
@@ -76,9 +75,7 @@ python distributed/node_client.py \
 | `--token` | 是 | 你的 Gitee 私人令牌（`projects` 权限；数据仓库私密，下载也需要） |
 | `--data-owner` | 是 | 数据仓库所有者（组织者的 gitee 登录名） |
 | `--data-repo` | 是 | 数据仓库名（默认 `shuju`） |
-| `--weight-owner` | 是 | 权重仓库所有者（组织者的 gitee 用户名） |
-| `--weight-repo` | 是 | 权重仓库名（如 `lz-weights`） |
-| `--weight-platform` | 否 | `gitee`（默认）或 `github` |
+| `--weights` | 是 | 权重文件路径（组织者发的，如 `./current.txt.gz`） |
 | `--node-name` | 否 | 你的昵称，上传的文件会标注来源 |
 | `--leelaz` | 是 | leelaz 引擎路径 |
 | `--games` | 否 | 每轮局数（默认 10） |
@@ -86,15 +83,15 @@ python distributed/node_client.py \
 | `--seed` | 否 | 随机种子（默认自动） |
 | `--keep-sgf` | 否 | 同时把棋谱保存到本地 `sgf_output/` |
 
-> 运行前请先确认 `phoenixgo` 权重: 下载最新权重后会在终端显示大小，确认 >100MB 即为正常。
-> 大权重（>100MB）在 Gitee 是分片存储的，脚本会自动下载并合并，无需手动处理。
+> 运行前请先确认权重文件存在且 >100MB（如 phoenixgo 权重 ~211MB），`--weights` 指向它。
+> 如果没有本地权重文件，也可以配置 `--weight-owner` / `--weight-repo` 从 Gitee/GitHub Release 自动下载（组织者开放了权重仓库时）。
 
 ### 周期贡献（定时任务）
 
 Windows 任务计划程序 / Linux cron 每周执行一次即可:
 
 ```bash
-python distributed/node_client.py --token xxx --data-owner 组织者的登录名 --data-repo shuju --weight-owner xxx --weight-repo lz-weights --leelaz ./leelaz.exe --games 20
+python distributed/node_client.py --token xxx --data-owner 组织者的登录名 --data-repo shuju --weights ./current.txt.gz --leelaz ./leelaz.exe --games 20
 ```
 
 ---

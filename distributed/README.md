@@ -60,16 +60,16 @@ python distributed/weight_release.py upload --platform gitee \
 !python distributed/kaggle_train.py \
     --data-owner 你的登录名 --data-repo shuju \
     --data-token Gitee私人令牌 \
-    --weight-owner 你的登录名 --weight-repo lz-weights \
-    --weight-token Gitee私人令牌 \
+    --weights-path /kaggle/input/weights/phoenixgo-v1.txt.gz \
     --selfplay-games 20
 ```
 
 - chunk 从 Gitee 数据仓库 `shuju` 下载（私密仓库需要 `--data-token`）
-- 权重从 Gitee Release 下载（或首次用 `--weights-path /kaggle/input/xxx/phoenixgo-v1.txt.gz` 指定本地文件）
-- 训练完新权重自动分片上传到 Gitee Release，贡献者下次自动拿到新权重
+- 权重用 `--weights-path` 指定 Kaggle Input 里的本地文件（首次用 phoenixgo；之后用上一轮训练出的新权重）
+- 训练完新权重保存在 `/kaggle/working/weights_new.txt.gz`，从 Notebook Output 下载后发给贡献者
 - **上传成功后自动删除数据仓库里的旧 chunk**（释放 Gitee 免费容量，给下一轮贡献者腾地方）
-- **建议加定时任务**: 每天自动跑一次 Notebook（右侧菜单 → Scheduling），实现循环自我进化
+- 想让循环全自动？把权重放到 Gitee Release 后，改用 `--weight-owner`/`--weight-repo`/`--weight-token`（`kaggle_train.py` 会自动发布新权重并供贡献者下载）
+- **建议加定时任务**: 每天自动跑一次 Notebook（右侧菜单 → Scheduling）
 
 ## 第四步: 贡献者（一条命令）
 
@@ -77,11 +77,11 @@ python distributed/weight_release.py upload --platform gitee \
 python distributed/node_client.py \
     --token 你的Gitee私人令牌 \
     --data-owner 你的登录名 --data-repo shuju \
-    --weight-owner 你的登录名 --weight-repo lz-weights \
+    --weights ./current.txt.gz \
     --leelaz ./leelaz.exe --games 20 --playouts 800
 ```
 
-会自动: 从 Gitee 下载最新权重（自动合并分片）→ 自对弈 → 每局 `dump_training` 生成训练数据 → 自动上传到 Gitee 数据仓库。
+会自动: 用你发的权重自对弈 → 每局 `dump_training` 生成训练数据 → 自动上传到 Gitee 数据仓库。
 
 不需要 kagglehub、不需要 kaggle 账号、不需要建 Dataset，只要有 leelaz 就行。
 
