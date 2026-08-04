@@ -1,0 +1,9 @@
+# Kaggle T4 GPU 训练环境依赖 (TF 2.16.x compat.v1)
+# 安装: pip install -r requirements.txt
+numpy>=1.22.0,<2.0.0
+scipy>=1.8.0
+six>=1.16.0
+protobuf>=3.19.0
+requests>=2.25.0
+# Kaggle 自带 tensorflow 2.16.x，此处仅作声明；如需手动安装:
+# pip install tensorflow==2.16.1
