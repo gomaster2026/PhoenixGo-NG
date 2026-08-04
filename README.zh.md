@@ -78,15 +78,15 @@ cmake .. -DUSE_CPU_ONLY=1
 
 ### 棋力分析 / 对弈
 
-1.选择适合你的版本，下载你喜欢的GUI，在网上搜索该GUI如何使用即可
+点击lizzieyzy，点击lizzieyzy_extracted，再点击2023-06-15-windows64和Lizzieyzy-2.5.3-win64即可使用
 
-2.GTP 命令示例：
-   ```
-   komi 7.5
-   play b q16
-   play w d4
-   genmove b
-   ```
+GTP 命令示例：
+```
+komi 7.5
+play b q16
+play w d4
+genmove b
+```
 
 ## 网络架构
 

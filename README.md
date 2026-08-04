@@ -78,15 +78,15 @@ cmake .. -DUSE_CPU_ONLY=1
 
 ### Analysis / Play
 
-1. Choose the version that suits you, download your preferred GUI, and search online for how to use that GUI.
+Click lizzieyzy, click lizzieyzy_extracted, then click 2023-06-15-windows64 and Lizzieyzy-2.5.3-win64 to use.
 
-2. GTP command example:
-   ```
-   komi 7.5
-   play b q16
-   play w d4
-   genmove b
-   ```
+GTP command example:
+```
+komi 7.5
+play b q16
+play w d4
+genmove b
+```
 
 ## Network Architecture
 
