@@ -103,18 +103,23 @@ genmove b
 
 ### 网络结构
 
-```
-输入 (18 × 19 × 19)
-    │
-    ▼ 卷积 (3×3, same padding)
-    │
-    ▼ Trunk BatchNorm (PhoenixGo 扩展)
-    │
-    ▼ 残差塔 (N × [Conv3×3 → BN → ReLU → Conv3×3 → BN] + skip)
-    │
-    ├─── Policy Head ── Conv 1×1 → BN → ReLU → FC(362) ──► 落子概率
-    │
-    └─── Value Head ── Conv 1×1 → BN → ReLU → FC(256) → ReLU → FC(1) ──► 胜率
+```mermaid
+graph TD
+    classDef head fill:#2d3436,stroke:#00cec9,stroke-width:2px,color:#fff;
+    classDef tower fill:#0984e3,stroke:#74b9ff,stroke-width:2px,color:#fff;
+    
+    Input[输入: 18×19×19 平面] --> Conv1[卷积 3×3]
+    Conv1 --> BN1[Trunk BatchNorm (PhoenixGo 扩展)]
+    BN1 --> Tower{残差塔 × N}
+    
+    Tower -->|卷积 3×3 → BN → ReLU| Conv2[卷积 3×3 → BN]
+    Conv2 -->|+ 跳跃连接| Tower
+    
+    Tower --> Policy[策略头: 卷积 1×1 → BN → ReLU → FC]:::head
+    Tower --> Value[价值头: 卷积 1×1 → BN → ReLU → FC → FC]:::head
+    
+    Policy --> Output1((落子概率))
+    Value --> Output2((胜率))
 ```
 
 - 残差块数量可配置（默认 20 块）
@@ -159,6 +164,18 @@ training/tf/parse.py 20 256 train.out
 - 详见 `training/tf/` 目录
 
 ## 贡献算力
+
+### 分布式训练流程
+
+```mermaid
+graph LR
+    subgraph 社区算力
+    A[贡献者客户端] -->|生成自对弈数据| B(训练服务器)
+    end
+    
+    B -->|聚合数据块| C{强化学习}
+    C -->|发布下一代权重| A
+```
 
 如需贡献算力，请联系 phoenixgo_zero@163.com，预计一天内即可回复。
 

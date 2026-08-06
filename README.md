@@ -103,18 +103,23 @@ Plane    18 : 1 if White to play, 0 otherwise
 
 ### Network Structure
 
-```
-Input (18 × 19 × 19)
-    │
-    ▼ Convolution (3×3, same padding)
-    │
-    ▼ Trunk BatchNorm (PhoenixGo extension)
-    │
-    ▼ Residual Tower (N × [Conv3×3 → BN → ReLU → Conv3×3 → BN] + skip)
-    │
-    ├─── Policy Head ── Conv 1×1 → BN → ReLU → FC(362) ──► Move probabilities
-    │
-    └─── Value Head ── Conv 1×1 → BN → ReLU → FC(256) → ReLU → FC(1) ──► Win rate
+```mermaid
+graph TD
+    classDef head fill:#2d3436,stroke:#00cec9,stroke-width:2px,color:#fff;
+    classDef tower fill:#0984e3,stroke:#74b9ff,stroke-width:2px,color:#fff;
+    
+    Input[Input: 18×19×19 Planes] --> Conv1[Conv 3×3]
+    Conv1 --> BN1[Trunk BatchNorm]
+    BN1 --> Tower{Residual Tower × N}
+    
+    Tower -->|Conv 3×3 → BN → ReLU| Conv2[Conv 3×3 → BN]
+    Conv2 -->|+ Skip Connection| Tower
+    
+    Tower --> Policy[Policy Head: Conv 1×1 → BN → ReLU → FC]:::head
+    Tower --> Value[Value Head: Conv 1×1 → BN → ReLU → FC → FC]:::head
+    
+    Policy --> Output1((Move Probabilities))
+    Value --> Output2((Win Rate))
 ```
 
 - Number of residual blocks is configurable (default 20 blocks)
@@ -159,6 +164,18 @@ training/tf/parse.py 20 256 train.out
 - See `training/tf/` directory for details
 
 ## Contributing Computing Power
+
+### Distributed Training Flow
+
+```mermaid
+graph LR
+    subgraph Community Computing
+    A[Contributor Client] -->|Generates Self-play Data| B(Training Server)
+    end
+    
+    B -->|Aggregates Chunks| C{Reinforcement Learning}
+    C -->|Publishes Next Gen Weights| A
+```
 
 To contribute computing power, please contact phoenixgo_zero@163.com. Expect a reply within one day.
 
