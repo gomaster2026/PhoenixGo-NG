@@ -170,7 +170,7 @@ class TFProcess:
 
         planes = tf.cast(planes, self.model_dtype)
 
-        planes = tf.reshape(planes, (batch_size, 18, 19*19))
+        planes = tf.reshape(planes, (batch_size, 17, 19*19))
         probs = tf.reshape(probs, (batch_size, 19*19 + 1))
         winner = tf.reshape(winner, (batch_size, 1))
 
@@ -262,6 +262,7 @@ class TFProcess:
         for (g, v) in self.grad_op_real:
             if g is None:
                 total_grad.append((g,v))
+                continue
             name = v.name.split(':')[0]
             gsum = tf.get_variable(name='gsum/'+name,
                                    shape=g.shape,
@@ -360,45 +361,49 @@ class TFProcess:
             raise
 
     def replace_weights(self, new_weights):
+        # v3 PhoenixGo format:
+        #   self.weights order per conv+BN unit: conv_w, conv_b, bn_gamma, bn_beta, bn_mean, bn_var
+        #   file order matches (6 lines per unit)
+        #   trunk BN: gamma, beta, mean, var (4 lines, no conv)
+        #   fc layers: w, b (2 lines)
+        # BN moving_variance in file is raw var; TF stores moving_variance as-is.
+        # No folding needed — TF batch_normalization uses gamma/beta/mean/var directly.
         for e, weights in enumerate(self.weights):
             if isinstance(weights, str):
                 weights = tf.get_default_graph().get_tensor_by_name(weights)
-            if weights.name.endswith('/batch_normalization/beta:0'):
-                # Batch norm beta is written as bias before the batch
-                # normalization in the weight file for backwards
-                # compatibility reasons.
-                bias = tf.constant(new_weights[e], shape=weights.shape)
-                # Weight file order: bias, means, variances
-                var = tf.constant(new_weights[e + 2], shape=weights.shape)
-                new_beta = tf.divide(bias, tf.sqrt(var + tf.constant(1e-5)))
-                self.assign(weights, new_beta)
+            if weights.name.endswith('/batch_normalization/gamma:0'):
+                # gamma: direct copy
+                new_w = tf.constant(new_weights[e], shape=weights.shape)
+                self.assign(weights, new_w)
+            elif weights.name.endswith('/batch_normalization/beta:0'):
+                # beta: direct copy (v3 has explicit beta, no folding)
+                new_w = tf.constant(new_weights[e], shape=weights.shape)
+                self.assign(weights, new_w)
+            elif weights.name.endswith('/batch_normalization/moving_mean:0'):
+                new_w = tf.constant(new_weights[e], shape=weights.shape)
+                self.assign(weights, new_w)
+            elif weights.name.endswith('/batch_normalization/moving_variance:0'):
+                # moving_variance: direct copy (TF applies epsilon internally)
+                new_w = tf.constant(new_weights[e], shape=weights.shape)
+                self.assign(weights, new_w)
             elif weights.shape.ndims == 4:
                 # Convolution weights need a transpose
-                #
-                # TF (kYXInputOutput)
-                # [filter_height, filter_width, in_channels, out_channels]
-                #
-                # Leela/cuDNN/Caffe (kOutputInputYX)
-                # [output, input, filter_size, filter_size]
+                # TF (kYXInputOutput) [fh, fw, in, out]
+                # Leela/cuDNN (kOutputInputYX) [out, in, fh, fw]
                 s = weights.shape.as_list()
                 shape = [s[i] for i in [3, 2, 0, 1]]
                 new_weight = tf.constant(new_weights[e], shape=shape)
                 self.assign(weights, tf.transpose(new_weight, [2, 3, 1, 0]))
             elif weights.shape.ndims == 2:
-                # Fully connected layers are [in, out] in TF
-                #
-                # [out, in] in Leela
-                #
+                # Fully connected: TF [in, out] ← Leela [out, in]
                 s = weights.shape.as_list()
                 shape = [s[i] for i in [1, 0]]
                 new_weight = tf.constant(new_weights[e], shape=shape)
                 self.assign(weights, tf.transpose(new_weight, [1, 0]))
             else:
-                # Biases, batchnorm etc
+                # Biases (conv_b, fc_b) — direct copy
                 new_weight = tf.constant(new_weights[e], shape=weights.shape)
                 self.assign(weights, new_weight)
-        #This should result in identical file to the starting one
-        #self.save_leelaz_weights('restored.txt')
 
     def restore(self, file):
         print("Restoring from {0}".format(file))
@@ -424,7 +429,11 @@ class TFProcess:
         timer = Timer()
         steps = 0
         while max_steps is None or steps < max_steps:
-            batch = next(train_data)
+            try:
+                batch = next(train_data)
+            except StopIteration:
+                print("训练数据已用完，提前结束训练")
+                break
             # Measure losses and compute gradients for this batch.
             losses = self.measure_loss(batch, training=True)
             stats.add(losses)
@@ -447,11 +456,15 @@ class TFProcess:
                     tf.Summary(value=summaries), steps)
                 stats.clear()
 
-            if steps % 8000 == 0:
+            if steps % 8000 == 0 and steps > 0:
                 test_stats = Stats()
                 test_batches = 800 # reduce sample mean variance by ~28x
                 for _ in range(0, test_batches):
-                    test_batch = next(test_data)
+                    try:
+                        test_batch = next(test_data)
+                    except StopIteration:
+                        print("测试数据已用完，跳过剩余测试")
+                        break
                     losses = self.measure_loss(test_batch, training=False)
                     test_stats.add(losses)
                 summaries = test_stats.summaries({'Policy Loss': 'policy',
@@ -481,7 +494,7 @@ class TFProcess:
                                             global_step=steps)
                 print("Model saved in file: {}".format(save_path))
 
-        # 训练结束，保存最终权重
+        # 训练结束，保存最终权重（即使数据提前用完也会执行）
         final_path = os.path.join(os.getcwd(), "leelaz-model-final")
         self.saver.save(self.session, final_path)
         final_leela = final_path + ".txt"
@@ -489,37 +502,38 @@ class TFProcess:
         print("Final leela weights saved to {}".format(final_leela))
 
     def save_leelaz_weights(self, filename):
+        # Save in PhoenixGo v3 format
+        # File layout:
+        #   Line 1: "3" (version)
+        #   Input conv unit: conv_w, conv_b, bn_gamma, bn_beta, bn_mean, bn_var (6 lines)
+        #   Residual blocks × N: 2 units × 6 lines = 12 lines each
+        #   Trunk BN: gamma, beta, mean, var (4 lines)
+        #   Policy head: conv_w, conv_b, bn_gamma, bn_beta, bn_mean, bn_var, ip_w, ip_b (8 lines)
+        #   Value head: conv_w, conv_b, bn_gamma, bn_beta, bn_mean, bn_var, ip1_w, ip1_b, ip2_w, ip2_b (10 lines)
         with open(filename, "w") as file:
-            # Version tag
-            file.write("1")
+            file.write("3")
             for weights in self.weights:
-                # Newline unless last line (single bias)
                 file.write("\n")
                 work_weights = None
-                if weights.name.endswith('/batch_normalization/beta:0'):
-                    # Batch norm beta needs to be converted to biases before
-                    # the batch norm for backwards compatibility reasons
-                    var_key = weights.name.replace('beta', 'moving_variance')
-                    var = tf.get_default_graph().get_tensor_by_name(var_key)
-                    work_weights = tf.multiply(weights,
-                                               tf.sqrt(var + tf.constant(1e-5)))
+                if weights.name.endswith('/batch_normalization/gamma:0'):
+                    # gamma: direct output
+                    work_weights = weights
+                elif weights.name.endswith('/batch_normalization/beta:0'):
+                    # beta: direct output (v3 has explicit beta)
+                    work_weights = weights
+                elif weights.name.endswith('/batch_normalization/moving_mean:0'):
+                    work_weights = weights
+                elif weights.name.endswith('/batch_normalization/moving_variance:0'):
+                    # Output raw variance (TF stores var, epsilon applied at inference)
+                    work_weights = weights
                 elif weights.shape.ndims == 4:
-                    # Convolution weights need a transpose
-                    #
-                    # TF (kYXInputOutput)
-                    # [filter_height, filter_width, in_channels, out_channels]
-                    #
-                    # Leela/cuDNN/Caffe (kOutputInputYX)
-                    # [output, input, filter_size, filter_size]
+                    # Conv: TF [fh,fw,in,out] → Leela [out,in,fh,fw]
                     work_weights = tf.transpose(weights, [3, 2, 0, 1])
                 elif weights.shape.ndims == 2:
-                    # Fully connected layers are [in, out] in TF
-                    #
-                    # [out, in] in Leela
-                    #
+                    # FC: TF [in,out] → Leela [out,in]
                     work_weights = tf.transpose(weights, [1, 0])
                 else:
-                    # Biases, batchnorm etc
+                    # Biases — direct output
                     work_weights = weights
                 nparray = work_weights.eval(session=self.session)
                 wt_str = [str(wt) for wt in np.ravel(nparray)]
@@ -550,14 +564,17 @@ class TFProcess:
         scope = self.get_batchnorm_key()
         with tf.variable_scope(scope,
                                custom_getter=float32_variable_storage_getter):
+            # PhoenixGo v3: epsilon=1e-3 (not LZ default 1e-5)
+            # scale=True (gamma), center=True (beta) — v3 BN has 4 params
             net = tf.layers.batch_normalization(
                     net,
-                    epsilon=1e-5, axis=1, fused=True,
-                    center=True, scale=False,
+                    epsilon=1e-3, axis=1, fused=True,
+                    center=True, scale=True,
                     training=self.training,
                     reuse=self.reuse_var)
 
-        for v in ['beta', 'moving_mean', 'moving_variance' ]:
+        # v3 weight file order: gamma, beta, mean, var
+        for v in ['gamma', 'beta', 'moving_mean', 'moving_variance']:
             name = "fp32_storage/" + scope + '/batch_normalization/' + v + ':0'
             var = tf.get_default_graph().get_tensor_by_name(name)
             self.add_weights(var)
@@ -565,61 +582,94 @@ class TFProcess:
         return net
 
     def conv_block(self, inputs, filter_size, input_channels, output_channels, name):
+        # v3 post-activation: conv → +bias → BN → ReLU
         W_conv = weight_variable(
             name,
             [filter_size, filter_size, input_channels, output_channels],
             self.model_dtype)
+        b_conv = bias_variable(name + "_b", [output_channels], self.model_dtype)
 
         self.add_weights(W_conv)
+        self.add_weights(b_conv)
 
         net = inputs
         net = conv2d(net, W_conv)
+        net = tf.nn.bias_add(net, b_conv, data_format='NCHW')
         net = self.batch_norm(net)
         net = tf.nn.relu(net)
         return net
 
-    def residual_block(self, inputs, channels, name):
+    def preact_residual_block(self, inputs, channels, name):
+        # PhoenixGo v3 pre-activation residual block:
+        #   Forward: BN → ReLU → conv+bias → BN → ReLU → conv+bias → +residual (NO ReLU after add)
+        #
+        # Weight registration order MUST match v3 file order (cw, cb, g, b, m, v)
+        # so that save_leelaz_weights outputs in the order Network.cpp load_v3_network reads.
+        # Conv weights are created BEFORE batch_norm is applied, but the forward pass
+        # still applies BN first (pre-activation). add_weights() order ≠ forward pass order.
         net = inputs
         orig = tf.identity(net)
 
-        # First convnet weights
+        # Unit 0: register conv_w, conv_b FIRST (file order), then BN params
         W_conv_1 = weight_variable(name + "_conv_1", [3, 3, channels, channels],
                                    self.model_dtype)
+        b_conv_1 = bias_variable(name + "_conv_1_b", [channels], self.model_dtype)
         self.add_weights(W_conv_1)
+        self.add_weights(b_conv_1)
 
-        net = conv2d(net, W_conv_1)
+        # Forward: pre-activation BN → ReLU → conv
         net = self.batch_norm(net)
         net = tf.nn.relu(net)
+        net = conv2d(net, W_conv_1)
+        net = tf.nn.bias_add(net, b_conv_1, data_format='NCHW')
 
-        # Second convnet weights
+        # Unit 1: register conv_w, conv_b FIRST (file order), then BN params
         W_conv_2 = weight_variable(name + "_conv_2", [3, 3, channels, channels],
                                    self.model_dtype)
+        b_conv_2 = bias_variable(name + "_conv_2_b", [channels], self.model_dtype)
         self.add_weights(W_conv_2)
+        self.add_weights(b_conv_2)
 
-        net = conv2d(net, W_conv_2)
         net = self.batch_norm(net)
-        net = tf.add(net, orig)
         net = tf.nn.relu(net)
+        net = conv2d(net, W_conv_2)
+        net = tf.nn.bias_add(net, b_conv_2, data_format='NCHW')
 
+        # Add residual (NO ReLU after add — PhoenixGo style)
+        net = tf.add(net, orig)
+        return net
+
+    def trunk_bn(self, inputs):
+        # PhoenixGo trunk BN + ReLU (after residual tower, before heads)
+        net = self.batch_norm(inputs)
+        net = tf.nn.relu(net)
         return net
 
     def construct_net(self, planes):
         # NCHW format
-        # batch, 18 channels, 19 x 19
-        x_planes = tf.reshape(planes, [-1, 18, 19, 19])
+        # PhoenixGo v3: 17 channels, 19 x 19
+        # Structure (must match Network.cpp load_v3_network + CPUPipe::forward):
+        #   1. Input conv (post-act): conv+→bias→BN→ReLU
+        #   2. Residual tower (pre-act): BN→ReLU→conv+bias→BN→ReLU→conv+bias→+res (no ReLU)
+        #   3. Trunk BN + ReLU (PG-specific, after residual tower)
+        #   4. Policy head: conv+bias→BN→ReLU→fc
+        #   5. Value head: conv+bias→BN→ReLU→fc→ReLU→fc→tanh
+        x_planes = tf.reshape(planes, [-1, 17, 19, 19])
 
-        # Input convolution
+        # 1. Input convolution (post-activation)
         flow = self.conv_block(x_planes, filter_size=3,
-                               input_channels=18,
+                               input_channels=17,
                                output_channels=self.residual_filters,
                                name="first_conv")
-        # Residual tower
+        # 2. Residual tower (pre-activation)
         for i in range(0, self.residual_blocks):
             block_name = "res_" + str(i)
-            flow = self.residual_block(flow, self.residual_filters,
-                                       name=block_name)
+            flow = self.preact_residual_block(flow, self.residual_filters,
+                                              name=block_name)
+        # 3. Trunk BN + ReLU (PhoenixGo-specific)
+        flow = self.trunk_bn(flow)
 
-        # Policy head
+        # 4. Policy head
         conv_pol = self.conv_block(flow, filter_size=1,
                                    input_channels=self.residual_filters,
                                    output_channels=2,
@@ -631,7 +681,7 @@ class TFProcess:
         self.add_weights(b_fc1)
         h_fc1 = tf.add(tf.matmul(h_conv_pol_flat, W_fc1), b_fc1)
 
-        # Value head
+        # 5. Value head
         conv_val = self.conv_block(flow, filter_size=1,
                                    input_channels=self.residual_filters,
                                    output_channels=1,
@@ -692,9 +742,13 @@ class TFProcess:
         # Copy the swa weights into the current network.
         self.session.run(self.swa_load_op)
         if self.swa_recalc_bn:
-            print("Refining SWA batch normalization")
+            print("Refining SWA batch norm")
             for _ in range(200):
-                batch = next(data)
+                try:
+                    batch = next(data)
+                except StopIteration:
+                    print("SWA BN recalc: 训练数据已用完，提前结束")
+                    break
                 self.session.run(
                     [self.loss, self.update_ops],
                     feed_dict={self.training: True,
@@ -709,27 +763,39 @@ class TFProcess:
 
 # Unit tests for TFProcess.
 def gen_block(size, f_in, f_out):
-    return [ [1.1] * size * size * f_in * f_out, # conv
-             [-.1] * f_out,  # bias weights
-             [-.2] * f_out,  # batch norm mean
-             [-.3] * f_out ] # batch norm var
+    # v3 format: conv_w, conv_b, gamma, beta, mean, var (6 elements per conv+BN unit)
+    return [ [1.1] * size * size * f_in * f_out, # conv_w
+             [-.1] * f_out,  # conv_b
+             [0.5] * f_out,  # gamma
+             [0.0] * f_out,  # beta
+             [-.2] * f_out,  # moving_mean
+             [-.3] * f_out ] # moving_variance
+
+def gen_bn(f_out):
+    # trunk BN: gamma, beta, mean, var (4 elements, no conv)
+    return [ [0.5] * f_out,  # gamma
+             [0.0] * f_out,  # beta
+             [-.2] * f_out,  # moving_mean
+             [-.3] * f_out ] # moving_variance
 
 class TFProcessTest(unittest.TestCase):
     def test_can_replace_weights(self):
         tfprocess = TFProcess(6, 128)
         tfprocess.init(batch_size=1)
         # use known data to test replace_weights() works.
-        data = gen_block(3, 18, tfprocess.residual_filters) # input conv
+        data = gen_block(3, 17, tfprocess.residual_filters) # input conv (6)
         for _ in range(tfprocess.residual_blocks):
             data.extend(gen_block(3,
-                tfprocess.residual_filters, tfprocess.residual_filters))
+                tfprocess.residual_filters, tfprocess.residual_filters))  # unit 0 (6)
             data.extend(gen_block(3,
-                tfprocess.residual_filters, tfprocess.residual_filters))
-        # policy
+                tfprocess.residual_filters, tfprocess.residual_filters))  # unit 1 (6)
+        # trunk BN (PhoenixGo-specific, 4 lines)
+        data.extend(gen_bn(tfprocess.residual_filters))
+        # policy head: conv+BN unit (6) + ip_w + ip_b (2) = 8
         data.extend(gen_block(1, tfprocess.residual_filters, 2))
         data.append([0.4] * 2*19*19 * (19*19+1))
         data.append([0.5] * (19*19+1))
-        # value
+        # value head: conv+BN unit (6) + ip1_w + ip1_b + ip2_w + ip2_b (4) = 10
         data.extend(gen_block(1, tfprocess.residual_filters, 1))
         data.append([0.6] * 19*19 * 256)
         data.append([0.7] * 256)

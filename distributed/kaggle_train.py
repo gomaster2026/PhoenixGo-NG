@@ -5,8 +5,8 @@ Leela Zero 训练脚本 — 在 Kaggle Notebook (T4 GPU) 上运行
 架构: Gitee 数据仓库（chunks，API 读写） + Gitee/GitHub Release（权重）
 
 用法 (Kaggle Notebook):
-    !git clone --depth 1 https://gitee.com/leela-zero-next/leela-zero-next
-    %cd leela-zero-next
+    !git clone --depth 1 https://gitee.com/AeonGo/AeonGo
+    %cd AeonGo
     !pip install tensorflow==2.15.0
     !python distributed/kaggle_train.py \\
         --data-owner 数据仓库所有者 --data-repo lz-data \\
@@ -208,7 +208,7 @@ def selfplay(leelaz_path, weights_path, num_games, visits, output_dir):
             r, _, _ = select.select([proc.stdout], [], [], 0.1)
             if r:
                 line = proc.stdout.readline()
-                if not line and proc.poll() is not None:
+                if not line:  # EOF: pipe closed (empty string, no \n)
                     return None
                 return line.rstrip("\n")
         return None
@@ -290,8 +290,61 @@ def selfplay(leelaz_path, weights_path, num_games, visits, output_dir):
     return chunk_files
 
 
+def detect_architecture(lines):
+    """从权重文件识别网络结构，返回 (blocks, filters) 或 (None, None)。
+
+    支持两种格式:
+      v1 (version="1"): 每卷积块 4 行 (conv_w, bias, mean, var)
+        总张量数 = 4 + 8*blocks + 14 = 18 + 8*blocks
+        blocks = (total - 18) / 8
+      v3 (version="3", PhoenixGo): 每卷积块 6 行 (conv_w, conv_b, bn_gamma, bn_beta, bn_mean, bn_var)
+        + trunk BN 4 行 + policy head 8 行 + value head 10 行
+        总张量数 = 6 + 12*blocks + 4 + 8 + 10 = 28 + 12*blocks
+        blocks = (total - 28) / 12
+
+    两种格式都要求输入卷积为 17 通道 (PhoenixGo 特征)。
+    注意: 仅 v3 支持训练（tfprocess.py 已改为 v3 预激活结构）。
+          v1 格式不兼容（后激活 + 无 trunk BN + 2参数BN），无法用于训练。
+    """
+    if not lines:
+        return None, None
+    version = lines[0].strip()
+    tensors = [l for l in lines[1:] if l.strip()]
+    if len(tensors) < 2:
+        return None, None
+    filters = len(tensors[1].split())
+    if filters <= 0:
+        return None, None
+    input_conv = tensors[0].split()
+    # 本 fork 输入为 17 通道 (PhoenixGo: 16 手历史 + 1 颜色)
+    if len(input_conv) != filters * 17 * 9:
+        return None, None
+
+    if version == "1":
+        # v1: 每块 4 行, ending 14 行
+        if len(tensors) < 18:
+            return None, None
+        blocks = (len(tensors) - 18) // 8
+        if blocks < 1 or (len(tensors) - 18) % 8 != 0:
+            return None, None
+        return blocks, filters
+    elif version == "3":
+        # v3 PhoenixGo: 每块 6 行 + trunk BN 4 行 + policy 8 行 + value 10 行
+        # 仅做结构识别，训练端不支持 v3 (网络结构不同: 预激活 vs 后激活, 有 trunk BN)
+        if len(tensors) < 28:
+            return None, None
+        blocks = (len(tensors) - 28) // 12
+        if blocks < 1 or (len(tensors) - 28) % 12 != 0:
+            return None, None
+        return blocks, filters
+    return None, None
+
+
 def convert_weights_to_checkpoint(tf_dir, weights_gz_path, blocks, filters, ckpt_dir):
-    """将 .txt.gz 权重文件转为 TF checkpoint（供 parse.py --restore）"""
+    """将 .txt.gz 权重文件转为 TF checkpoint（供 parse.py --restore）。
+
+    返回 (checkpoint_path, blocks, filters)；结构不匹配时抛出异常。
+    """
     tf_dir = Path(tf_dir)
     if str(tf_dir) not in sys.path:
         sys.path.insert(0, str(tf_dir))
@@ -307,13 +360,41 @@ def convert_weights_to_checkpoint(tf_dir, weights_gz_path, blocks, filters, ckpt
     with gzip.open(weights_gz_path, "rt") as f:
         lines = [l.rstrip("\n") for l in f if l.strip()]
 
-    version = lines[0] if lines else "0"
+    version = lines[0].strip() if lines else "0"
     log(f"权重版本: {version}")
+
+    if version != "3":
+        raise ValueError(
+            f"不支持的权重版本: '{version}'。训练端已改为 v3 (PhoenixGo 预激活) 结构，"
+            f"仅支持 version=3 的权重文件。请使用 PhoenixGo v3 格式权重。")
+
+    detected_blocks, detected_filters = detect_architecture(lines)
+    if blocks is None and detected_blocks is not None:
+        blocks, filters = detected_blocks, detected_filters
+        log(f"已自动识别网络结构: blocks={blocks}, filters={filters}")
+    if blocks is None or filters is None:
+        raise ValueError(
+            "无法从权重文件识别网络结构（需 17 通道 PhoenixGo 格式权重），"
+            "可用 --blocks/--filters 手动指定")
+
+    # v3 PhoenixGo 权重现在由训练端原生支持:
+    #   tfprocess.py 已改为 v3 结构 (预激活残差 + trunk BN + 4参数BN)
+    #   replace_weights 处理 gamma/beta/mean/var 6行单元
+    #   save_leelaz_weights 输出 v3 格式
 
     new_weights = []
     for line in lines[1:]:
         if line:
             new_weights.append(list(map(float, line.split(" "))))
+
+    # v3 file order matches self.weights order exactly:
+    #   Input conv:    [cw, cb, g, b, m, v] (6 lines)
+    #   Each res block: [cw0, cb0, g0, b0, m0, v0, cw1, cb1, g1, b1, m1, v1] (12 lines)
+    #   Trunk BN:      [g, b, m, v] (4 lines)
+    #   Policy head:   [cw, cb, g, b, m, v, ip_w, ip_b] (8 lines)
+    #   Value head:    [cw, cb, g, b, m, v, ip1_w, ip1_b, ip2_w, ip2_b] (10 lines)
+    # preact_residual_block registers conv weights BEFORE BN params (file order),
+    # so no reordering is needed here.
 
     log(f"加载 {len(new_weights)} 个权重张量, 创建 TF 图 (blocks={blocks}, filters={filters})...")
     tfprocess = TFProcess(blocks, filters)
@@ -324,7 +405,7 @@ def convert_weights_to_checkpoint(tf_dir, weights_gz_path, blocks, filters, ckpt
     saved = tfprocess.saver.save(tfprocess.session, ckpt_path, global_step=0)
     log(f"TF checkpoint: {saved}")
     tfprocess.session.close()
-    return saved
+    return saved, blocks, filters
 
 
 def run_training(tf_dir, chunks_dir, checkpoint_path, output_path,
@@ -336,6 +417,8 @@ def run_training(tf_dir, chunks_dir, checkpoint_path, output_path,
         return False
 
     # 给 chunk 文件统一前缀，确保 get_chunks 能读到
+    # 用 move 而非 copy：原文件名 (train_*.gz / sp_*.gz) 以 t/s 开头，
+    # 若用 copy 会导致 glob("t*.gz") 匹配到 train_*.gz 造成重复数据
     chunk_dir = Path(chunks_dir)
     gz_files = sorted(chunk_dir.glob("*.gz"))
     if not gz_files:
@@ -344,7 +427,7 @@ def run_training(tf_dir, chunks_dir, checkpoint_path, output_path,
     for i, f in enumerate(gz_files):
         new_name = chunk_dir / f"t{i:06d}.gz"
         if new_name != f:
-            shutil.copy2(f, new_name)
+            shutil.move(str(f), str(new_name))
 
     # 前缀必须是目录路径 + 文件名前缀 → glob 为 {dir}/t*.gz
     train_prefix = str(chunk_dir) + "/t"
@@ -418,14 +501,16 @@ def main():
                         default=os.environ.get("LZ_WEIGHTS_PATH", ""),
                         help="基础权重 .txt.gz 路径（首次用，如 /kaggle/input/weights/phoenixgo-v1.txt.gz）")
     parser.add_argument("--repo",
-                        default="https://gitee.com/ABCradio/leela-zero-next",
+                        default="https://gitee.com/ABCradio/AeonGo",
                         help="仓库地址")
-    parser.add_argument("--blocks", type=int, default=19,
-                        help="残差块数（默认 19）")
-    parser.add_argument("--filters", type=int, default=256,
-                        help="卷积滤波器数（默认 256）")
+    parser.add_argument("--blocks", type=int, default=None,
+                        help="残差块数（默认自动从权重文件识别）")
+    parser.add_argument("--filters", type=int, default=None,
+                        help="卷积滤波器数（默认自动从权重文件识别）")
     parser.add_argument("--max-steps", type=int, default=500,
                         help="最大训练步数（默认 500）")
+    parser.add_argument("--allow-scratch", action="store_true",
+                        help="权重转换失败时允许从头训练（默认直接报错退出，防止意外浪费算力）")
     parser.add_argument("--selfplay-games", type=int, default=20,
                         help="自对弈局数（默认 20）")
     parser.add_argument("--selfplay-visits", type=int, default=800,
@@ -499,13 +584,23 @@ def main():
         sys.exit(1)
     log(f"共 {len(total_chunks)} 个 chunk 用于训练")
 
-    # 5. 权重 → TF checkpoint
+    # 5. 权重 → TF checkpoint（自动识别 blocks/filters，保证接着基础权重训练）
     ckpt_dir = work_dir / "checkpoint"
     try:
-        ckpt_path = convert_weights_to_checkpoint(
+        ckpt_path, blocks, filters = convert_weights_to_checkpoint(
             tf_dir, base_net, args.blocks, args.filters, ckpt_dir)
+        log(f"将从基础权重继续训练 (blocks={blocks}, filters={filters})")
     except Exception as e:
-        log(f"权重转换失败: {e}，将从头训练")
+        log(f"权重转换失败: {e}")
+        if not args.allow_scratch:
+            log("错误: 基础权重无法用于继续训练")
+            log("若确需从零训练，请显式加 --allow-scratch")
+            sys.exit(1)
+        if args.blocks is None or args.filters is None:
+            log("错误: --allow-scratch 从零训练需要显式指定 --blocks/--filters")
+            sys.exit(1)
+        log("--allow-scratch 已指定，将从头训练")
+        blocks, filters = args.blocks, args.filters
         ckpt_path = None
 
     # 6. 训练
@@ -515,8 +610,8 @@ def main():
         chunks_dir=chunks_dir,
         checkpoint_path=ckpt_path,
         output_path=output_path,
-        blocks=args.blocks,
-        filters=args.filters,
+        blocks=blocks,
+        filters=filters,
         max_steps=args.max_steps,
     )
 

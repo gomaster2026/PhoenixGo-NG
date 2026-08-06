@@ -25,7 +25,6 @@ import gzip
 import multiprocessing as mp
 import os
 import random
-import shufflebuffer as sb
 import sys
 import tempfile
 import tensorflow.compat.v1 as tf

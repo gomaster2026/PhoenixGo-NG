@@ -2,7 +2,7 @@
 """
 Leela Zero 节点客户端 — 贡献算力
 
-通过 GTP 协议驱动 leelaz 自对弈，生成 V1 格式训练数据（.gz），
+通过 GTP 协议驱动 leelaz 自对弈，生成 PhoenixGo v3 格式训练数据（17通道 .gz），
 自动上传到 Gitee 数据仓库（chunks/ 目录）。
 
 权重文件优先级:

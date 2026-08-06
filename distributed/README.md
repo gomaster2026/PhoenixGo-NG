@@ -54,8 +54,8 @@ python distributed/weight_release.py upload --platform gitee \
 创建 Notebook → 选 **GPU T4 x2** → 输入代码:
 
 ```
-!git clone --depth 1 https://gitee.com/ABCradio/leela-zero-next
-%cd leela-zero-next
+!git clone --depth 1 https://gitee.com/ABCradio/AeonGo
+%cd AeonGo
 !pip install tensorflow==2.16.1
 !python distributed/kaggle_train.py --data-owner ABCradio --data-repo shuju --data-token Gitee私人令牌 --weights-path /kaggle/input/你的数据集名/phoenixgo-v1.txt.gz --selfplay-games 10
 ```

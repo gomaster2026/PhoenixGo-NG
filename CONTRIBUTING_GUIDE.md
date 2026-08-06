@@ -32,8 +32,8 @@
 
 ```bash
 apt install -y build-essential cmake libboost-all-dev zlib1g-dev
-git clone --depth 1 https://gitee.com/组织者用户名/leela-zero-next
-cd leela-zero-next
+git clone --depth 1 https://gitee.com/组织者用户名/AeonGo
+cd AeonGo
 mkdir build && cd build
 cmake .. -DUSE_CPU_ONLY=1
 make -j$(nproc)
@@ -46,8 +46,8 @@ make -j$(nproc)
 ## 第三步：下载仓库
 
 ```bash
-git clone --depth 1 https://gitee.com/组织者用户名/leela-zero-next
-cd leela-zero-next
+git clone --depth 1 https://gitee.com/组织者用户名/AeonGo
+cd AeonGo
 ```
 
 ---
