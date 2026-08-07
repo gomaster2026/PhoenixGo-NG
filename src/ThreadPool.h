@@ -1,141 +1,257 @@
 #ifndef THREADPOOL_H_INCLUDED
 #define THREADPOOL_H_INCLUDED
-/*
-    Extended from code:
-    Copyright (c) 2012 Jakob Progsch, Václav Zeman
-    Modifications:
-    Copyright (c) 2017-2019 Gian-Carlo Pascutto and contributors
 
-    This software is provided 'as-is', without any express or implied
-    warranty. In no event will the authors be held liable for any damages
-    arising from the use of this software.
-
-    Permission is granted to anyone to use this software for any purpose,
-    including commercial applications, and to alter it and redistribute it
-    freely, subject to the following restrictions:
-
-    1. The origin of this software must not be misrepresented; you must not
-    claim that you wrote the original software. If you use this software
-    in a product, an acknowledgment in the product documentation would be
-    appreciated but is not required.
-
-    2. Altered source versions must be plainly marked as such, and must not be
-    misrepresented as being the original software.
-
-    3. This notice may not be removed or altered from any source
-    distribution.
-*/
-
-#include <condition_variable>
 #include <cstddef>
-#include <functional>
-#include <future>
-#include <memory>
-#include <mutex>
-#include <queue>
 #include <thread>
 #include <vector>
 
-namespace Utils {
+#include "SMP.h"
 
 class ThreadPool {
 public:
-    ThreadPool() = default;
-    ~ThreadPool();
-
-    // create worker threads.  This version has no initializers.
-    void initialize(std::size_t);
-
-    // add an extra thread.  The thread calls initializer() before doing
-    // anything, so that the user can initialize per-thread data structures
-    // before doing work.
-    void add_thread(std::function<void()> initializer);
-    template <class F, class... Args>
-    auto add_task(F&& f, Args&&... args)
-        -> std::future<typename std::result_of<F(Args...)>::type>;
-
-private:
-    std::vector<std::thread> m_threads;
-    std::queue<std::function<void()>> m_tasks;
-
-    std::mutex m_mutex;
-    std::condition_variable m_condvar;
-    bool m_exit{false};
-};
-
-inline void ThreadPool::add_thread(std::function<void()> initializer) {
-    m_threads.emplace_back([this, initializer] {
-        initializer();
-        for (;;) {
-            std::function<void()> task;
-            {
-                std::unique_lock<std::mutex> lock(m_mutex);
-                m_condvar.wait(lock,
-                               [this] { return m_exit || !m_tasks.empty(); });
-                if (m_exit && m_tasks.empty()) {
-                    return;
-                }
-                task = std::move(m_tasks.front());
-                m_tasks.pop();
+    ThreadPool(size_t threads) {
+        if (threads == 0) {
+            threads = std::max(1u, std::thread::hardware_concurrency());
+        }
+        m_sources.reserve(threads);
+        for (size_t i = 0; i < threads; i++) {
+            m_sources.emplace_back(this, i);
+        }
+    }
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+    size_t size() const { return m_sources.size(); }
+    class TaskGroup {
+    public:
+        TaskGroup(ThreadPool* tp) : m_pool(tp) {
+            for (auto& s : m_pool->m_sources) {
+                m_left.add();
             }
-            task();
         }
-    });
-}
-
-inline void ThreadPool::initialize(const size_t threads) {
-    for (size_t i = 0; i < threads; i++) {
-        add_thread([]() {} /* null function */);
-    }
-}
-
-template <class F, class... Args>
-auto ThreadPool::add_task(F&& f, Args&&... args)
-    -> std::future<typename std::result_of<F(Args...)>::type> {
-    using return_type = typename std::result_of<F(Args...)>::type;
-
-    auto task = std::make_shared<std::packaged_task<return_type()>>(
-        std::bind(std::forward<F>(f), std::forward<Args>(args)...));
-
-    std::future<return_type> res = task->get_future();
-    {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_tasks.emplace([task]() { (*task)(); });
-    }
-    m_condvar.notify_one();
-    return res;
-}
-
-inline ThreadPool::~ThreadPool() {
-    {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_exit = true;
-    }
-    m_condvar.notify_all();
-    for (std::thread& worker : m_threads) {
-        worker.join();
-    }
-}
-
-class ThreadGroup {
-public:
-    ThreadGroup(ThreadPool& pool) : m_pool(pool) {}
-    template <class F, class... Args>
-    void add_task(F&& f, Args&&... args) {
-        m_taskresults.emplace_back(
-            m_pool.add_task(std::forward<F>(f), std::forward<Args>(args)...));
-    }
-    void wait_all() {
-        for (auto&& result : m_taskresults) {
-            result.get();
+        ~TaskGroup() { wait(); }
+        TaskGroup() = delete;
+        TaskGroup(TaskGroup&& g) : m_pool(g.m_pool) {
+            m_left.add();
+            for (auto& s : g.m_pool->m_sources) {
+                m_left.remove();
+                m_left.add();
+            }
+            g.m_pool = nullptr;
         }
-    }
-
+        TaskGroup(const TaskGroup&) = delete;
+        TaskGroup& operator=(const TaskGroup&) = delete;
+        TaskGroup& operator=(TaskGroup&&) = delete;
+        void add() { m_left.add(); }
+        void remove() { m_left.remove(); }
+        void wait() { m_left.wait(); }
+    private:
+        class ThreadSafeCounter {
+        public:
+            void add() { m_counter.add("m_count"); }
+            void remove() {
+                int val = m_counter.sub("m_count");
+                if (val == 0) {
+                    std::lock_guard<std::mutex> guard(m_mutex);
+                    m_counter.notify("m_count");
+                }
+            }
+            void wait() {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                m_counter.wait(m_condition, "m_count",
+                               [this]() {
+                                   return m_counter.get("m_count") == 0;
+                               });
+            }
+            std::atomic<int> m_counter{0};
+            std::mutex m_mutex;
+            std::condition_variable m_condition;
+        };
+        ThreadSafeCounter m_left;
+        ThreadPool* m_pool;
+    };
 private:
-    ThreadPool& m_pool;
-    std::vector<std::future<void>> m_taskresults;
+    class ThreadSource {
+    public:
+        ThreadSource(ThreadPool* pool, size_t thread_num)
+            : m_pool(pool), m_thread(&ThreadSource::loop, this, thread_num) {}
+        ~ThreadSource() { finish(); }
+        ThreadSource(const ThreadSource&) = delete;
+        ThreadSource(ThreadSource&&) = delete;
+        ThreadSource& operator=(const ThreadSource&) = delete;
+        void join() { m_thread.join(); }
+        void finish() {
+            m_tasks.add();
+            m_tasks.wait();
+        }
+        bool thread_ever_had_work() const { return m_ever_had_work; }
+        void loop(size_t thread_num) {
+            while (true) {
+                m_tasks.wait();
+                if (m_pool->m_taskgroup == nullptr) {
+                    if (m_pool->m_source_single == this) return;
+                    if (!thread_ever_had_work()) return;
+                    continue;
+                }
+                m_ever_had_work = true;
+                while (auto task = m_pool->m_taskgroup->try_pickup()) {
+                    task(this, thread_num);
+                }
+            }
+        }
+    public:
+        class Counter {
+        public:
+            Counter() = default;
+            Counter(const Counter&) = delete;
+            Counter(Counter&&) = delete;
+            Counter& operator=(const Counter&) = delete;
+            void add(const std::string& comment) {
+                (void)comment;
+                int oldcounter = m_count.fetch_add(1, std::memory_order_relaxed);
+                assert(oldcounter >= 0);
+                (void)oldcounter;
+            }
+            int sub(const std::string& comment) {
+                (void)comment;
+                int oldcounter = m_count.fetch_sub(1, std::memory_order_relaxed);
+                assert(oldcounter > 0);
+                return oldcounter - 1;
+            }
+            bool get(const std::string& comment) {
+                (void)comment;
+                return m_count.load(std::memory_order_relaxed);
+            }
+            void notify(const std::string& comment) {
+                (void)comment;
+                m_condition.notify_all();
+            }
+            void wait(std::condition_variable& condition,
+                      const std::string& comment,
+                      std::function<bool()> pred) {
+                (void)comment;
+                std::unique_lock<std::mutex> lock(m_mutex);
+                condition.wait(lock, pred);
+            }
+            std::atomic<int> m_count{0};
+            std::mutex m_mutex;
+            std::condition_variable m_condition;
+        };
+        class TaskGroup {
+        public:
+            using TaskFunc = std::function<void(ThreadSource* thread, size_t thread_num)>;
+            void add_task(TaskFunc task) {
+                assert(googler.get("task_count") > 0 || googler.get("active_count") > 0);
+                {
+                    std::lock_guard<std::mutex> lock(m_pool->m_mutex);
+                    m_tasks.push_back(task);
+                }
+                m_tasks_length.notify("task_count");
+            }
+            void add_tasks(TaskFunc* begin, TaskFunc* end) {
+                assert(googler.get("task_count") > 0 || googler.get("active_count") > 0);
+                {
+                    std::lock_guard<std::mutex> lock(m_pool->m_mutex);
+                    m_tasks.insert(m_tasks.end(), begin, end);
+                }
+                while (begin++ != end) {
+                    m_tasks_length.notify("task_count");
+                }
+            }
+            TaskFunc try_pickup() {
+                std::lock_guard<std::mutex> lock(m_pool->m_mutex);
+                if (!m_tasks.empty()) {
+                    m_tasks_length.remove("task_count");
+                    auto task = m_tasks.front();
+                    m_tasks.erase(m_tasks.begin());
+                    googler.remove("active_count");
+                    return task;
+                } else {
+                    googler.add("active_count");
+                    return nullptr;
+                }
+            }
+            TaskGroup(ThreadPool& pool) : m_pool(pool), googler() {
+                googler.add("active_count");
+            }
+            TaskGroup() = delete;
+            TaskGroup(const TaskGroup&) = delete;
+            TaskGroup& operator=(const TaskGroup&) = delete;
+            ~TaskGroup() = default;
+        private:
+            ThreadPool& m_pool;
+            std::vector<TaskFunc> m_tasks;
+            Counter m_tasks_length;
+            Counter googler;
+        };
+        ThreadSource(ThreadPool* pool, size_t thread_num) {
+            (void)thread_num;
+        }
+        ThreadSource& operator=(ThreadSource&&) = default;
+    private:
+        ThreadPool* m_pool;
+        std::thread m_thread;
+        TaskGroup m_tasks{m_pool};
+        bool m_ever_had_work = false;
+    };
+public:
+    class TaskGroup {
+    public:
+        TaskGroup(ThreadPool& pool) : m_pool(pool), m_submitted_tasks(0) {
+            m_pool.m_mutex.lock();
+            m_pool.m_source_single = nullptr;
+            m_pool.m_source_all = nullptr;
+            m_pool.m_taskgroup = this;
+            m_pool.m_mutex.unlock();
+        }
+        TaskGroup() = delete;
+        TaskGroup(const TaskGroup&) = delete;
+        TaskGroup& operator=(const TaskGroup&) = delete;
+        TaskGroup(TaskGroup&& tg) noexcept : m_pool(tg.m_pool) {
+            tg.wait();
+            std::lock_guard<std::mutex> guard(m_pool.m_mutex);
+            m_pool.m_taskgroup = this;
+        }
+        TaskGroup& operator=(TaskGroup&&) = delete;
+        ~TaskGroup() {
+            wait();
+            std::lock_guard<std::mutex> guard(m_pool.m_mutex);
+            m_pool.m_taskgroup = nullptr;
+        }
+        void add_task(ThreadSource::TaskGroup::TaskFunc task) {
+            m_submitted_tasks++;
+            for (auto& s : m_pool.m_sources) {
+                s.m_tasks.add_task(std::move(task));
+            }
+        }
+        void add_tasks(ThreadSource::TaskGroup::TaskFunc* begin,
+                       ThreadSource::TaskGroup::TaskFunc* end) {
+            m_submitted_tasks += (end - begin);
+            for (auto& s : m_pool.m_sources) {
+                s.m_tasks.add_tasks(begin, end);
+            }
+        }
+        ThreadSource::TaskGroup::TaskFunc try_pickup() {
+            for (auto& s : m_pool.m_sources) {
+                auto task = s.m_tasks.try_pickup();
+                if (task) return task;
+            }
+            return nullptr;
+        }
+        void wait() {
+            while (auto task = try_pickup()) {
+                task(nullptr, 0);
+            }
+        }
+    private:
+        ThreadPool& m_pool;
+        size_t m_submitted_tasks;
+    };
+private:
+    std::vector<ThreadSource> m_sources;
+    std::mutex m_mutex;
+    TaskGroup* m_taskgroup{nullptr};
+    ThreadSource* m_source_single{nullptr};
+    ThreadSource* m_source_all{nullptr};
 };
-
-}
 
 #endif

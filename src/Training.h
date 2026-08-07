@@ -1,106 +1,71 @@
-/*
-    This file is part of Leela Zero.
-    Copyright (C) 2017-2019 Gian-Carlo Pascutto and contributors
-
-    Leela Zero is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    Leela Zero is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with Leela Zero.  If not, see <http://www.gnu.org/licenses/>.
-
-    Additional permission under GNU GPL version 3 section 7
-
-    If you modify this Program, or any covered work, by linking or
-    combining it with NVIDIA Corporation's libraries from the
-    NVIDIA CUDA Toolkit and/or the NVIDIA CUDA Deep Neural
-    Network library and/or the NVIDIA TensorRT inference library
-    (or a modified version of those libraries), containing parts covered
-    by the terms of the respective license agreement, the licensors of
-    this Program grant you additional permission to convey the resulting
-    work.
-*/
-
 #ifndef TRAINING_H_INCLUDED
 #define TRAINING_H_INCLUDED
 
 #include "config.h"
 
-#include <bitset>
-#include <cstddef>
+#include <array>
+#include <cstdint>
+#include <fstream>
 #include <string>
-#include <utility>
 #include <vector>
+#include <memory>
 
 #include "GameState.h"
 #include "Network.h"
-#include "UCTNode.h"
-
-class TimeStep {
-public:
-    using BoardPlane = std::bitset<NUM_INTERSECTIONS>;
-    using NNPlanes = std::vector<BoardPlane>;
-    NNPlanes planes;
-    std::vector<float> probabilities;
-    int to_move;
-    float net_winrate;
-    float root_uct_winrate;
-    float child_uct_winrate;
-    int bestmove_visits;
-};
-
-std::ostream& operator<<(std::ostream& stream, const TimeStep& timestep);
-std::istream& operator>>(std::istream& stream, TimeStep& timestep);
-
-class OutputChunker {
-public:
-    OutputChunker(const std::string& basename, bool compress = false);
-    ~OutputChunker();
-    void append(const std::string& str);
-
-    // Group this many games in a batch.
-    static constexpr size_t CHUNK_SIZE = 32;
-
-private:
-    std::string gen_chunk_name() const;
-    void flush_chunks();
-    size_t m_game_count{0};
-    size_t m_chunk_count{0};
-    std::string m_buffer;
-    std::string m_basename;
-    bool m_compress{false};
-};
 
 class Training {
 public:
-    static void clear_training();
-    static void dump_training(int winner_color,
-                              const std::string& out_filename);
-    static void dump_debug(const std::string& out_filename);
-    static void record(Network& network, const GameState& state,
-                       const UCTNode& node);
-
-    static void dump_supervised(const std::string& sgf_file,
-                                const std::string& out_filename);
-    static void save_training(const std::string& filename);
-    static void load_training(const std::string& filename);
-
+    void dump_training(const std::string& filename, bool compress);
+    void dump_scored_moves(const std::string& filename, bool compress);
+    void reset(void);
+    void record(const GameState& state, const Network::Netresult& result);
 private:
-    static TimeStep::NNPlanes get_planes(const GameState* state);
-    static void process_game(GameState& state, size_t& train_pos, int who_won,
-                             const std::vector<int>& tree_moves,
-                             OutputChunker& outchunker);
-    static void dump_training(int winner_color, OutputChunker& outchunker);
-    static void dump_debug(OutputChunker& outchunker);
-    static void save_training(std::ofstream& out);
-    static void load_training(std::ifstream& in);
-    static std::vector<TimeStep> m_data;
+    struct MoveRecord {
+        std::array<float, NUM_INTERSECTIONS> policy;
+        float winrate_pass;
+        float winrate;
+        float eval;
+        int to_move;
+        std::vector<int> board_features;
+        std::vector<int> move_features;
+        bool is_black_to_move;
+    };
+    std::vector<MoveRecord> m_data;
+    struct OutputChunk {
+        std::int32_t num_samples;
+        std::int32_t label;
+        std::int32_t is_black_to_move;
+        std::int32_t rule;
+        std::int32_t ko;
+        std::float32_t eval;
+        std::float32_t deadstones;
+        float policies[NUM_INTERSECTIONS * POTENTIAL_MOVES];
+    } m_output;
+    struct OutputChunk2 {
+        std::int32_t num_samples;
+        std::int32_t rule;
+        std::int32_t ko;
+        std::int32_t pad;
+        std::float32_t eval;
+        std::float32_t scoremean;
+        std::float32_t scorestddev;
+        std::float32_t binstatscoremean;
+        std::float32_t binstoscstddev;
+        std::float32_t lead;
+        std::float32_t rank;
+        std::float32_t Odin;
+        std::float32_t variance;
+        std::float32_t estun;
+        std::float32_t stddevun;
+        float policies[NUM_INTERSECTIONS * POTENTIAL_MOVES];
+    } m_output2;
+    std::array<float, NUM_INTERSECTIONS> m_probabilities;
+    std::shared_ptr<std::ofstream> m_output_stream;
+    std::shared_ptr<std::ofstream> m_output_stream2;
+    std::uint32_t m_version{2};
+    std::int32_t m_num_samples{0};
+    std::uint32_t m_compress{0};
+    bool m_training{false};
 };
 
 #endif

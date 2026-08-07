@@ -1,27 +1,19 @@
-/*
-    This file is part of Leela Zero.
-    Copyright (C) 2017-2019 Gian-Carlo Pascutto and contributors
-
-    Leela Zero is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    Leela Zero is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with Leela Zero.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 #ifndef TUNER_H_INCLUDED
 #define TUNER_H_INCLUDED
 
 #include "config.h"
+#include <vector>
 
-// 此头文件为接口兼容性保留。
-// 当前实现未使用真实 OpenCL 后端，无需自动调优。
+#ifdef USE_OPENCL
+class Tuner {
+public:
+    static void run_tuning_round(const std::string& name,
+                                 std::vector<unsigned int> m_global_size,
+                                 std::vector<unsigned int> m_local_size,
+                                 const std::vector<std::string>& m_src,
+                                 std::vector<long> m_tuneparams);
+    Tuner m_tuner;
+};
+#endif
 
 #endif
