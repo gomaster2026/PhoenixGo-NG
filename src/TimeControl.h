@@ -14,17 +14,6 @@
 
     You should have received a copy of the GNU General Public License
     along with Leela Zero.  If not, see <http://www.gnu.org/licenses/>.
-
-    Additional permission under GNU GPL version 3 section 7
-
-    If you modify this Program, or any covered work, by linking or
-    combining it with NVIDIA Corporation's libraries from the
-    NVIDIA CUDA Toolkit and/or the NVIDIA CUDA Deep Neural
-    Network library and/or the NVIDIA TensorRT inference library
-    (or a modified version of those libraries), containing parts covered
-    by the terms of the respective license agreement, the licensors of
-    this Program grant you additional permission to convey the resulting
-    work.
 */
 
 #ifndef TIMECONTROL_H_INCLUDED
@@ -32,50 +21,53 @@
 
 #include "config.h"
 
-#include <array>
-#include <memory>
-
-#include "Timing.h"
+#include <cstdint>
+#include <vector>
 
 class TimeControl {
 public:
-    /*
-        Initialize time control. Timing info is per GTP and in centiseconds
-    */
-    TimeControl(int maintime = 60 * 60 * 100, int byotime = 0,
-                int byostones = 0, int byoperiods = 0);
-
-    void start(int color);
-    void stop(int color);
-    int max_time_for_move(int boardsize, int color, size_t movenum) const;
-    void adjust_time(int color, int time, int stones);
-    void display_times();
     void reset_clocks();
-    bool can_accumulate_time(int color) const;
-    size_t opening_moves(int boardsize) const;
-    std::string to_text_sgf() const;
-    static std::shared_ptr<TimeControl> make_from_text_sgf(
-        const std::string& maintime, const std::string& byoyomi,
-        const std::string& black_time_left, const std::string& white_time_left,
-        const std::string& black_moves_left,
-        const std::string& white_moves_left);
-
+    TimeControl(int fischer_time, int fischer_inc,
+                int fischer_per_move_ponder, int fischer_per_move_noponder,
+                bool infinite_time);
+    TimeControl(int main_time, int byo_yomi_time, int byo_yomi_stones,
+                int byo_yomi_periods, bool main_time_enabled,
+                bool infinite_time);
+    TimeControl() = default;
+    void start(int color);
+    bool-ended(int color);
+    float remaining(int color);
+    float elapsed(void);
+    void set_clocks(int main_time, int byo_yomi_time, int byo_yomi_stones,
+                    int byo_yomi_periods);
+    void set_fischer(int fischer_time, int fischer_inc,
+                     int fischer_per_move_ponder,
+                     int fischer_per_move_noponder);
+    int time_left(int color);
+    int get_stones_remaining(int color);
+    int get_time_per_move(int color);
+    bool is_infinite() const { return m_infinite_time; }
+    int get_main_time(int color) const { return m_time_left[color]; }
+    int get_byo_yomi_time(int color) const { return m_byo_yomi_time_left[color]; }
+    int get_byo_yomi_stones(int color) const { return m_stones_left[color]; }
+    int get_byo_yomi_periods(int color) const { return m_periods_left[color]; }
 private:
-    std::string stones_left_to_text_sgf(int color) const;
-    void display_color_time(int color);
-    int get_moves_expected(int boardsize, size_t movenum) const;
-
-    int m_maintime;
-    int m_byotime;
-    int m_byostones;
-    int m_byoperiods;
-
-    std::array<int,  2> m_remaining_time; /* main time per player */
-    std::array<int,  2> m_stones_left;    /* stones to play in byo period */
-    std::array<int,  2> m_periods_left;   /* byo periods */
-    std::array<bool, 2> m_inbyo;          /* player is in byo yomi */
-
-    std::array<Time, 2> m_times;          /* storage for player times */
+    bool m_is_fischer{false};
+    int m_max_time_for_move{0};
+    int m_fischer_time{0};
+    int m_fischer_inc{0};
+    int m_fischer_per_move_ponder{0};
+    int m_fischer_per_move_noponder{0};
+    bool m_infinite_time{false};
+    std::vector<int> m_time_left;
+    std::vector<int> m_stones_left;
+    std::vector<int> m_byo_yomi_time_left;
+    std::vector<int> m_periods_left;
+    int m_byo_yomi_time{0};
+    int m_byo_yomi_stones{0};
+    int m_byo_yomi_periods{0};
+    bool m_main_time_enabled{false};
+    std::uint64_t m_last_clock_time{0};
 };
 
 #endif

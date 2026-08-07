@@ -14,37 +14,30 @@
 
     You should have received a copy of the GNU General Public License
     along with Leela Zero.  If not, see <http://www.gnu.org/licenses/>.
-
-    Additional permission under GNU GPL version 3 section 7
-
-    If you modify this Program, or any covered work, by linking or
-    combining it with NVIDIA Corporation's libraries from the
-    NVIDIA CUDA Toolkit and/or the NVIDIA CUDA Deep Neural
-    Network library and/or the NVIDIA TensorRT inference library
-    (or a modified version of those libraries), containing parts covered
-    by the terms of the respective license agreement, the licensors of
-    this Program grant you additional permission to convey the resulting
-    work.
 */
 
 #ifndef TIMING_H_INCLUDED
 #define TIMING_H_INCLUDED
 
+#include "config.h"
+
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 
-class Time {
-public:
-    /* sets to current time */
-    Time();
+using std::chrono::operator""ms;
+using std::chrono::operator""s;
+using TimePoint = std::chrono::steady_clock::time_point;
 
-    /* time difference in centiseconds */
-    static int timediff_centis(Time start, Time end);
-
-    /* time difference in seconds */
-    static double timediff_seconds(Time start, Time end);
-
-private:
-    std::chrono::steady_clock::time_point m_time;
+struct Timer {
+    std::uint64_t start;
+    Timer();
+    std::uint64_t elapsed() const;
+    std::uint64_t elapsed_ms() const;
 };
+
+std::uint64_t cpuid_cycles();
+std::uint64_t Timer_tsc_to_ms(const std::uint64_t duration);
+std::uint64_t cfg_to_stones(int playouts);
 
 #endif
