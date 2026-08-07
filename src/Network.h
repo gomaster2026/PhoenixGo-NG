@@ -14,17 +14,6 @@
 
     You should have received a copy of the GNU General Public License
     along with Leela Zero.  If not, see <http://www.gnu.org/licenses/>.
-
-    Additional permission under GNU GPL version 3 section 7
-
-    If you modify this Program, or any covered work, by linking or
-    combining it with NVIDIA Corporation's libraries from the
-    NVIDIA CUDA Toolkit and/or the NVIDIA CUDA Deep Neural
-    Network library and/or the NVIDIA TensorRT inference library
-    (or a modified version of those libraries), containing parts covered
-    by the terms of the respective license agreement, the licensors of
-    this Program grant you additional permission to convey the resulting
-    work.
 */
 
 #ifndef NETWORK_H_INCLUDED
@@ -54,16 +43,14 @@
 #include "SMP.h"
 #endif
 
-// Winograd filter transformation changes 3x3 filters to M + 3 - 1
 constexpr auto WINOGRAD_M = 4;
 constexpr auto WINOGRAD_ALPHA = WINOGRAD_M + 3 - 1;
 constexpr auto WINOGRAD_WTILES =
     BOARD_SIZE / WINOGRAD_M + (BOARD_SIZE % WINOGRAD_M != 0);
 constexpr auto WINOGRAD_TILE = WINOGRAD_ALPHA * WINOGRAD_ALPHA;
 constexpr auto WINOGRAD_P = WINOGRAD_WTILES * WINOGRAD_WTILES;
-constexpr auto SQ2 = 1.4142135623730951f; // Square root of 2
+constexpr auto SQ2 = 1.4142135623730951f;
 
-// See drain_evals() / resume_evals() for details.
 class NetworkHaltException : public std::exception {};
 
 class Network {
@@ -85,7 +72,6 @@ public:
                          bool write_cache = true, bool force_selfcheck = false);
 
     static constexpr auto INPUT_MOVES = 8;
-    // PhoenixGo: 17 channels (8 history pairs + 1 color), not 18
     static constexpr auto INPUT_CHANNELS = 2 * INPUT_MOVES + 1;
     static constexpr auto OUTPUTS_POLICY = 2;
     static constexpr auto OUTPUTS_VALUE = 1;
@@ -109,19 +95,14 @@ public:
     void nncache_resize(int max_count);
     void nncache_clear();
 
-    // 'Drain' evaluations.  Threads with an evaluation will throw a
-    // NetworkHaltException if possible, or will just proceed and drain ASAP.
-    // New evaluation requests will also result in a NetworkHaltException.
     virtual void drain_evals();
-
-    // Flag the network to be open for business.
     virtual void resume_evals();
 
 private:
     std::pair<int, int> load_v1_network(std::istream& wtfile);
     std::pair<int, int> load_v3_network(std::istream& wtfile);
     std::pair<int, int> load_network_file(const std::string& filename);
-    int m_format_version{1};  // 1=v1, 2=v2(ELF), 3=v3(PhoenixGo extension)
+    int m_format_version{1};
 
     static std::vector<float> winograd_transform_f(const std::vector<float>& f,
                                                    int outputs, int channels);
@@ -163,22 +144,15 @@ private:
 
     size_t estimated_size{0};
 
-    // Residual tower
     std::shared_ptr<ForwardPipeWeights> m_fwd_weights;
 
-    // PhoenixGo extension: trunk BN (layer_final/batch_norm)
-    // Stored as gamma/beta/mean/var, folded into mean/stddev during load.
-    // Channels = network trunk channels (256 for 20b-v1).
-    std::vector<float> m_bn_trunk_g1;   // gamma
-    std::vector<float> m_bn_trunk_b1;   // beta
-    std::vector<float> m_bn_trunk_w1;   // mean
-    std::vector<float> m_bn_trunk_w2;   // var (processed to 1/sqrt(var+eps))
+    std::vector<float> m_bn_trunk_g1;
+    std::vector<float> m_bn_trunk_b1;
+    std::vector<float> m_bn_trunk_w1;
+    std::vector<float> m_bn_trunk_w2;
 
-    // Policy head
     std::array<float, OUTPUTS_POLICY> m_bn_pol_w1;
     std::array<float, OUTPUTS_POLICY> m_bn_pol_w2;
-    // PhoenixGo extension: BN affine params (gamma/beta) for policy head
-    // v1/v2 networks default to gamma=1.0, beta=0.0
     std::array<float, OUTPUTS_POLICY> m_bn_pol_g1;
     std::array<float, OUTPUTS_POLICY> m_bn_pol_b1;
 
@@ -186,10 +160,8 @@ private:
         m_ip_pol_w;
     std::array<float, POTENTIAL_MOVES> m_ip_pol_b;
 
-    // Value head
     std::array<float, OUTPUTS_VALUE> m_bn_val_w1;
     std::array<float, OUTPUTS_VALUE> m_bn_val_w2;
-    // PhoenixGo extension: BN affine params (gamma/beta) for value head
     std::array<float, OUTPUTS_VALUE> m_bn_val_g1;
     std::array<float, OUTPUTS_VALUE> m_bn_val_b1;
 
