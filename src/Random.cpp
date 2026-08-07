@@ -54,18 +54,13 @@ Random::Random(const std::uint64_t seed) {
     }
 }
 
-// This is xoroshiro128+.
-// Note that the last bit isn't entirely random, so don't use it,
-// if possible.
 std::uint64_t Random::gen() {
     const std::uint64_t s0 = m_s[0];
     std::uint64_t s1 = m_s[1];
     const std::uint64_t result = s0 + s1;
-
     s1 ^= s0;
     m_s[0] = Utils::rotl(s0, 55) ^ s1 ^ (s1 << 14);
     m_s[1] = Utils::rotl(s1, 36);
-
     return result;
 }
 
@@ -86,9 +81,6 @@ static std::uint64_t splitmix64(std::uint64_t z) {
 }
 
 void Random::seedrandom(const std::uint64_t seed) {
-    // Initialize state of xoroshiro128+ by transforming the seed
-    // with the splitmix64 algorithm.
-    // As suggested by http://xoroshiro.di.unimi.it/xoroshiro128plus.c
     m_s[0] = splitmix64(seed);
     m_s[1] = splitmix64(m_s[0]);
 }
