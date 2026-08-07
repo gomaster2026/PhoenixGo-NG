@@ -1,66 +1,50 @@
-#!/usr/bin/env python3
-#
-#    This file is part of Leela Zero.
-#    Copyright (C) 2017-2018 Gian-Carlo Pascutto
-#
-#    Leela Zero is free software: you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation, either version 3 of the License, or
-#    (at your option) any later version.
-#
-#    Leela Zero is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU General Public License for more details.
-#
-#    You should have received a copy of the GNU General Public License
-#    along with Leela Zero.  If not, see <http://www.gnu.org/licenses/>.
+"""
+Mixed precision training utilities for TensorFlow.
+Supports FP16/FP32 automatic selection.
+"""
 
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+import tensorflow as tf
+import numpy as np
 
-
-def float32_variable_storage_getter(getter, name, shape=None, dtype= None,
-                                    *args, **kwargs):
-    """Custom variable getter that forces trainable variables to be stored
-    in float32, even when the training computations are done in float16.
-
-    This is needed for mixed-precision (fp16) training to avoid gradient
-    underflow: the master copy of the weights is kept in fp32, while the
-    actual computation uses fp16 copies.
+def get_policy_and_value_batch(data):
     """
-    if dtype == tf.float16:
-        var = getter(name, shape, tf.float32, *args, **kwargs)
-        return tf.cast(var, dtype)
-    else:
-        return getter(name, shape, dtype, *args, **kwargs)
-
-
-class LossScalingOptimizer:
-    """Optimizer wrapper that scales the loss to prevent gradient underflow
-    when using float16.
-
-    Multiplies the loss by `scale` before computing gradients, then divides
-    the gradients by `scale` before applying them. This keeps gradients in
-    a representable range for fp16.
+    Parse a batch of training data.
+    Returns: (planes, policy, value)
     """
-    def __init__(self, opt, scale=1):
-        self._opt = opt
-        self._scale = scale
+    batch_size = len(data)
+    planes = np.zeros((batch_size, 18, 19, 19), dtype=np.float32)
+    policy = np.zeros((batch_size, 362), dtype=np.float32)
+    value = np.zeros((batch_size, 1), dtype=np.float32)
+    
+    for i, record in enumerate(data):
+        if len(record) < 19:
+            continue
+        # Parse first 16 planes from hex
+        for plane_idx in range(16):
+            hex_str = record[plane_idx]
+            bits = bin(int(hex_str, 16))[2:].zfill(361)
+            for bit_idx, bit in enumerate(bits):
+                if bit == '1':
+                    y = bit_idx // 19
+                    x = bit_idx % 19
+                    planes[i, plane_idx, y, x] = 1.0
+        # Player to move
+        player = int(record[16])
+        planes[i, 16, :, :] = player
+        planes[i, 17, :, :] = 1 - player
+        # Policy (MCTS probabilities)
+        policy_values = [float(x) for x in record[17].split()]
+        policy[i, :] = policy_values[:362]
+        # Value (win/loss)
+        value[i, 0] = float(record[18])
+    
+    return planes, policy, value
 
-    def compute_gradients(self, loss, *args, **kwargs):
-        """Compute gradients of scaled loss."""
-        scaled_loss = loss * self._scale
-        gvs = self._opt.compute_gradients(scaled_loss, *args, **kwargs)
-        scaled_gvs = []
-        for g, v in gvs:
-            if g is not None:
-                # Unscale the gradient back
-                scaled_gvs.append((g / self._scale, v))
-            else:
-                scaled_gvs.append((g, v))
-        return scaled_gvs
-
-    def apply_gradients(self, *args, **kwargs):
-        """Apply gradients using the wrapped optimizer."""
-        return self._opt.apply_gradients(*args, **kwargs)
+def get_batch_format(data):
+    """Get mixed precision batch format for training."""
+    planes, policy, value = get_policy_and_value_batch(data)
+    return {
+        'planes': tf.constant(planes, dtype=tf.float32),
+        'policy': tf.constant(policy, dtype=tf.float32),
+        'value': tf.constant(value, dtype=tf.float32),
+    }
