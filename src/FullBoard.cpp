@@ -29,196 +29,141 @@
 
 #include "config.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
+#include <cctype>
+#include <iostream>
+#include <queue>
+#include <sstream>
+#include <string>
 
 #include "FullBoard.h"
 
-#include "Network.h"
 #include "Utils.h"
-#include "Zobrist.h"
 
 using namespace Utils;
 
-int FullBoard::remove_string(const int i) {
-    int pos = i;
-    int removed = 0;
-    int color = m_state[i];
+int FullBoard::estimate_score(float komi) const {
+    auto score = 0;
+    auto bd = std::vector<bool>(m_numvertices, false);
+    auto open = std::queue<int>();
 
-    do {
-        m_hash    ^= Zobrist::zobrist[m_state[pos]][pos];
-        m_ko_hash ^= Zobrist::zobrist[m_state[pos]][pos];
-
-        m_state[pos] = EMPTY;
-        m_parent[pos] = NUM_VERTICES;
-
-        remove_neighbour(pos, color);
-
-        m_empty_idx[pos] = m_empty_cnt;
-        m_empty[m_empty_cnt] = pos;
-        m_empty_cnt++;
-
-        m_hash    ^= Zobrist::zobrist[m_state[pos]][pos];
-        m_ko_hash ^= Zobrist::zobrist[m_state[pos]][pos];
-
-        removed++;
-        pos = m_next[pos];
-    } while (pos != i);
-
-    return removed;
-}
-
-std::uint64_t FullBoard::calc_ko_hash() const {
-    auto res = Zobrist::zobrist_empty;
-
-    for (auto i = 0; i < m_numvertices; i++) {
-        if (m_state[i] != INVAL) {
-            res ^= Zobrist::zobrist[m_state[i]][i];
-        }
-    }
-
-    /* Tromp-Taylor has positional superko */
-    return res;
-}
-
-template <class Function>
-std::uint64_t FullBoard::calc_hash(const int komove, Function transform) const {
-    auto res = Zobrist::zobrist_empty;
-
-    for (auto i = 0; i < m_numvertices; i++) {
-        if (m_state[i] != INVAL) {
-            res ^= Zobrist::zobrist[m_state[i]][transform(i)];
-        }
-    }
-
-    /* prisoner hashing is rule set dependent */
-    res ^= Zobrist::zobrist_pris[0][m_prisoners[0]];
-    res ^= Zobrist::zobrist_pris[1][m_prisoners[1]];
-
-    if (m_tomove == BLACK) {
-        res ^= Zobrist::zobrist_blacktomove;
-    }
-
-    res ^= Zobrist::zobrist_ko[transform(komove)];
-
-    return res;
-}
-
-std::uint64_t FullBoard::calc_hash(const int komove) const {
-    return calc_hash(komove, [](const auto vertex) { return vertex; });
-}
-
-std::uint64_t FullBoard::calc_symmetry_hash(const int komove,
-                                            const int symmetry) const {
-    return calc_hash(komove, [this, symmetry](const auto vertex) {
-        if (vertex == NO_VERTEX) {
-            return NO_VERTEX;
-        } else {
-            const auto newvtx =
-                Network::get_symmetry(get_xy(vertex), symmetry, m_boardsize);
-            return get_vertex(newvtx.first, newvtx.second);
-        }
-    });
-}
-
-std::uint64_t FullBoard::get_hash() const {
-    return m_hash;
-}
-
-std::uint64_t FullBoard::get_ko_hash() const {
-    return m_ko_hash;
-}
-
-void FullBoard::set_to_move(const int tomove) {
-    if (m_tomove != tomove) {
-        m_hash ^= Zobrist::zobrist_blacktomove;
-    }
-    FastBoard::set_to_move(tomove);
-}
-
-int FullBoard::update_board(const int color, const int i) {
-    assert(i != FastBoard::PASS);
-    assert(m_state[i] == EMPTY);
-
-    m_hash ^= Zobrist::zobrist[m_state[i]][i];
-    m_ko_hash ^= Zobrist::zobrist[m_state[i]][i];
-
-    m_state[i] = vertex_t(color);
-    m_next[i] = i;
-    m_parent[i] = i;
-    m_libs[i] = count_pliberties(i);
-    m_stones[i] = 1;
-
-    m_hash ^= Zobrist::zobrist[m_state[i]][i];
-    m_ko_hash ^= Zobrist::zobrist[m_state[i]][i];
-
-    /* update neighbor liberties (they all lose 1) */
-    add_neighbour(i, color);
-
-    /* did we play into an opponent eye? */
-    auto eyeplay = (m_neighbours[i] & s_eyemask[!color]);
-
-    auto captured_stones = 0;
-    int captured_vtx;
-
-    for (int k = 0; k < 4; k++) {
-        int ai = i + m_dirs[k];
-
-        if (m_state[ai] == !color) {
-            if (m_libs[m_parent[ai]] <= 0) {
-                int this_captured = remove_string(ai);
-                captured_vtx = ai;
-                captured_stones += this_captured;
+    for (auto i = 0; i < m_boardsize; i++) {
+        for (auto j = 0; j < m_boardsize; j++) {
+            auto vertex = get_vertex(i, j);
+            if (m_state[vertex] == WHITE) {
+                score--;
+                bd[vertex] = true;
+            } else if (m_state[vertex] == BLACK) {
+                score++;
+                bd[vertex] = true;
             }
-        } else if (m_state[ai] == color) {
-            int ip = m_parent[i];
-            int aip = m_parent[ai];
+        }
+    }
 
-            if (ip != aip) {
-                if (m_stones[ip] >= m_stones[aip]) {
-                    merge_strings(ip, aip);
+    // flood fill regions to count territory
+    for (auto i = 0; i < m_boardsize; i++) {
+        for (auto j = 0; j < m_boardsize; j++) {
+            auto vertex = get_vertex(i, j);
+            if (!bd[vertex] && m_state[vertex] == EMPTY) {
+                // start flood fill
+                auto st = 0;
+                auto blacksc = false;
+                auto whitesc = false;
+                open.push(vertex);
+                bd[vertex] = true;
+                auto region = std::vector<int>();
+                region.push_back(vertex);
+
+                while (!open.empty()) {
+                    auto v = open.front();
+                    open.pop();
+                    st++;
+
+                    for (auto k = 0; k < 4; k++) {
+                        auto nv = v + m_dirs[k];
+                        if (!bd[nv]) {
+                            if (m_state[nv] == WHITE) {
+                                whitesc = true;
+                            } else if (m_state[nv] == BLACK) {
+                                blacksc = true;
+                            } else {
+                                bd[nv] = true;
+                                open.push(nv);
+                                region.push_back(nv);
+                            }
+                        }
+                    }
+                }
+
+                if (!blacksc && !whitesc) {
+                    // seki
+                } else if (blacksc && whitesc) {
+                    // dame
+                } else if (blacksc) {
+                    score += st;
                 } else {
-                    merge_strings(aip, ip);
+                    score -= st;
                 }
             }
         }
     }
 
-    m_hash ^= Zobrist::zobrist_pris[color][m_prisoners[color]];
-    m_prisoners[color] += captured_stones;
-    m_hash ^= Zobrist::zobrist_pris[color][m_prisoners[color]];
+    // apply komi
+    score -= static_cast<int>(komi + 0.5f);
 
-    /* move last vertex in list to our position */
-    auto lastvertex = m_empty[--m_empty_cnt];
-    m_empty_idx[lastvertex] = m_empty_idx[i];
-    m_empty[m_empty_idx[i]] = lastvertex;
+    return score;
+}
 
-    /* check whether we still live (i.e. detect suicide) */
-    if (m_libs[m_parent[i]] == 0) {
-        assert(captured_stones == 0);
-        remove_string(i);
-    }
-
-    /* check for possible simple ko */
-    if (captured_stones == 1 && eyeplay) {
-        assert(get_state(captured_vtx) == FastBoard::EMPTY
-               && !is_suicide(captured_vtx, !color));
-        return captured_vtx;
-    }
-
-    // No ko
-    return NO_VERTEX;
+std::string FullBoard::move_to_text_sgf(const int move) const {
+    return FastBoard::move_to_text_sgf(move);
 }
 
 void FullBoard::display_board(const int lastmove) {
-    FastBoard::display_board(lastmove);
+    int boardsize = get_boardsize();
 
-    myprintf("Hash: %llX Ko-Hash: %llX\n\n", get_hash(), get_ko_hash());
+    myprintf("\n   ");
+    print_columns();
+    for (int j = boardsize - 1; j >= 0; j--) {
+        myprintf("%2d", j + 1);
+        if (lastmove == get_vertex(0, j))
+            myprintf("(");
+        else
+            myprintf(" ");
+        for (int i = 0; i < boardsize; i++) {
+            if (get_state(i, j) == WHITE) {
+                myprintf("O");
+            } else if (get_state(i, j) == BLACK) {
+                myprintf("X");
+            } else if (starpoint(boardsize, i, j)) {
+                myprintf("+");
+            } else {
+                myprintf(".");
+            }
+            if (lastmove == get_vertex(i, j)) {
+                myprintf(")");
+            } else if (i != boardsize - 1 && lastmove == get_vertex(i, j) + 1) {
+                myprintf("(");
+            } else {
+                myprintf(" ");
+            }
+        }
+        myprintf("%2d\n", j + 1);
+    }
+    myprintf("   ");
+    print_columns();
+    myprintf("\n");
 }
 
-void FullBoard::reset_board(const int size) {
-    FastBoard::reset_board(size);
-
-    m_hash = calc_hash();
-    m_ko_hash = calc_ko_hash();
+void FullBoard::print_columns() {
+    for (int i = 0; i < get_boardsize(); i++) {
+        if (i < 25) {
+            myprintf("%c ", (('a' + i < 'i') ? 'a' + i : 'a' + i + 1));
+        } else {
+            myprintf("%c ", (('A' + (i - 25) < 'I') ? 'A' + (i - 25)
+                                                    : 'A' + (i - 25) + 1));
+        }
+    }
+    myprintf("\n");
 }
