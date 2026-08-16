@@ -90,11 +90,23 @@ def part_names(parts_count):
 
 
 def download_gitee(owner, repo, dest_path):
-    """从 Gitee 下载最新权重（读 meta → 逐个下分片 → 合并）"""
+    """从 Gitee 下载最新权重。
+
+    兼容两种上传形态：
+    1. 单文件（≤90MB，未分片）：直接下 current.txt.gz，无 .meta。
+    2. 分片（>90MB）：读 .meta → 逐个下分片 → 合并。
+    先试单文件（404 时 download_url 返回 False），再退回分片流程。
+    """
     base = f"https://gitee.com/{owner}/{repo}/releases/download/{RELEASE_TAG}"
+    direct_url = f"{base}/{WEIGHT_BASE}"
+    log(f"尝试单文件下载: {direct_url}")
+    if download_url(direct_url, dest_path, timeout=600, retries=3):
+        log(f"权重下载完成: {dest_path} ({Path(dest_path).stat().st_size / 1e6:.1f} MB)")
+        return True
+
     meta_url = f"{base}/{WEIGHT_BASE}.meta"
     meta_tmp = Path(dest_path).with_suffix(".meta.tmp")
-    log(f"读取分片清单: {meta_url}")
+    log(f"单文件不存在，读取分片清单: {meta_url}")
     if not download_url(meta_url, meta_tmp, timeout=120, retries=3):
         log("错误: 找不到分片清单，请先上传权重")
         return False
@@ -211,7 +223,8 @@ def upload_gitee(owner, repo, token, weight_path, retries=3):
                     timeout=600,
                 )
                 if r.status_code not in (200, 201):
-                    log(f"上传 {name} 失败: HTTP {r.status_code} {r.text[:200]}")
+                    # 不要打印 r.text：响应体可能回显 access_token
+                    log(f"上传 {name} 失败: HTTP {r.status_code}")
                     ok = False
                     break
                 log(f"  上传完成: {name} ({len(data) / 1e6:.1f} MB)")
@@ -278,7 +291,8 @@ def upload_github(owner, repo, token, weight_path, retries=3):
             if r.status_code in (200, 201):
                 log(f"权重上传成功: {WEIGHT_BASE}")
                 return True
-            log(f"上传失败: HTTP {r.status_code} {r.text[:200]}")
+            # 不要打印 r.text：响应体可能回显 access_token
+            log(f"上传失败: HTTP {r.status_code}")
         except Exception as e:
             log(f"上传异常: {e}")
         log(f"重试 {attempt}/{retries}...")

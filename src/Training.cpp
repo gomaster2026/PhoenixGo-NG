@@ -172,13 +172,6 @@ void Training::record(Network& network, const GameState& state,
                                            Network::IDENTITY_SYMMETRY);
     step.net_winrate = result.winrate;
 
-    const auto& best_node = root.get_best_root_child(step.to_move);
-    step.root_uct_winrate = root.get_eval(step.to_move);
-    step.child_uct_winrate = best_node.get_eval(step.to_move);
-    step.bestmove_visits = best_node.get_visits();
-
-    step.probabilities.resize(POTENTIAL_MOVES);
-
     // Get total visit amount. We count rather
     // than trust the root to avoid ttable issues.
     auto sum_visits = 0.0;
@@ -190,9 +183,19 @@ void Training::record(Network& network, const GameState& state,
     // will not able to accumulate search results on them because every attempt
     // to evaluate will bail immediately. So in this case there will be 0 total
     // visits, and we should not construct the (non-existent) probabilities.
+    // Check before touching the children: get_best_root_child()/get_eval()
+    // would divide by zero on a never-visited child (assert in debug, NaN in
+    // release).
     if (sum_visits <= 0.0) {
         return;
     }
+
+    const auto& best_node = root.get_best_root_child(step.to_move);
+    step.root_uct_winrate = root.get_eval(step.to_move);
+    step.child_uct_winrate = best_node.get_eval(step.to_move);
+    step.bestmove_visits = best_node.get_visits();
+
+    step.probabilities.resize(POTENTIAL_MOVES);
 
     for (const auto& child : root.get_children()) {
         auto prob = static_cast<float>(child->get_visits() / sum_visits);

@@ -125,10 +125,6 @@ static constexpr auto MAX_CPUS = 64;
 static constexpr auto MAX_CPUS = 256;
 #endif
 
-#ifdef USE_HALF
-#include "half/half.hpp"
-#endif
-
 #ifdef USE_OPENCL
 // If OpenCL are fully usable, then check the OpenCL against CPU
 // implementation with some probability.

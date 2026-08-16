@@ -224,11 +224,15 @@ void UCTNode::prepare_root_node(Network& network, const int color,
     kill_superkos(root_state);
 
     {
-        // 两种模式都注入根 Dirichlet 噪声，参数由 cfg_noise 决定：
-        //   对弈模式 (cfg_noise=false): epsilon=0.1, alpha=0.01 (小噪声)
-        //   训练模式 (cfg_noise=true):  epsilon=0.25, alpha=0.03 (标准 AlphaZero)
-        const float epsilon = cfg_noise ? 0.25f : 0.1f;
-        const float alpha = (cfg_noise ? 0.03f : 0.01f) * 361.0f / NUM_INTERSECTIONS;
-        dirichlet_noise(epsilon, alpha);
+        // 仅在训练模式（--noise，自对弈）注入根 Dirichlet 噪声：
+        //   epsilon=0.25, alpha=0.03（标准 AlphaZero 探索参数）。
+        // 对弈模式（cfg_noise=false）不注入 —— 噪声会扰动根先验，
+        // 浅搜索时可能把噪声抬高的低先验手抬成最佳手，表现为怪招。
+        // （PhoenixGo 对弈模式 enable_noise=0，与上游 LZ 行为一致。）
+        if (cfg_noise) {
+            const float epsilon = 0.25f;
+            const float alpha = 0.03f * 361.0f / NUM_INTERSECTIONS;
+            dirichlet_noise(epsilon, alpha);
+        }
     }
 }

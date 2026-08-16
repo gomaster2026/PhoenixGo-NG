@@ -129,6 +129,13 @@ extern bool cfg_time_control_enable;
 extern int cfg_time_control_c_denom;
 extern int cfg_time_control_c_maxply;
 extern float cfg_time_control_reserved_time;
+// PhoenixGo time control (mcts_config.proto time_control): per-move floor and
+// the move number after which the byo-yomi floor applies.
+extern float cfg_time_control_min_time;
+extern int cfg_time_control_byo_after;
+// Hard per-move cap in milliseconds (mcts_config.proto timeout_ms_per_step).
+// Default 5000 matches the shipped mcts_cpu.conf; 0 disables the cap.
+extern int cfg_timeout_ms_per_step;
 extern std::string cfg_logfile;
 extern std::string cfg_weightsfile;
 extern FILE* cfg_logfile_handle;

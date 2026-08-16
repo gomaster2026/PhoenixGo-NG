@@ -117,7 +117,12 @@ static void calculate_thread_count_gpu(
         if (vm["batchsize"].as<unsigned int>() > 0) {
             cfg_batch_size = vm["batchsize"].as<unsigned int>();
         } else {
-            cfg_batch_size = 5;
+            // Default batch 16 (the OpenCL scratch buffers cap at MAX_BATCH).
+            // Batching amortizes the winograd weight reads across positions,
+            // which is the dominant cost on both old and new GPUs; a bigger
+            // batch helps modern cards and is neutral on weak (compute-bound)
+            // ones. LZ's old default of 5 left modern GPUs under-fed.
+            cfg_batch_size = 16;
         }
 
         cfg_num_threads =
@@ -396,9 +401,12 @@ static void parse_commandline(const int argc, const char* const argv[]) {
         //   第31手起转贪婪（movenum>=cfg_random_cnt时不采样，直接argmax）
         // 论文: "MCTS plays at temperature T=1 for first 30 moves, then T≈0"
         cfg_random_temp = 1.0f;
-        if (!vm.count("randomcnt")) {
-            cfg_random_cnt = 30;
-        }
+    }
+    if (cfg_noise && !vm.count("randomcnt")) {
+        // 无论 --randomtemp 是否显式指定，--noise 训练模式都必须启用
+        // 温度采样（默认前 30 手）。GTP.cpp 的默认 cfg_random_cnt=0
+        // （对弈模式 argmax）不能被 --noise 静默跳过。
+        cfg_random_cnt = 30;
     }
 
     if (vm.count("dumbpass")) {

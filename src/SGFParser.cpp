@@ -117,6 +117,10 @@ std::vector<std::string> SGFParser::chop_all(const std::string& filename,
 std::string SGFParser::chop_from_file(const std::string& filename,
                                       const size_t index) {
     auto vec = chop_all(filename, index);
+    if (index >= vec.size()) {
+        // Requested game index out of range (fewer games in the file).
+        return std::string();
+    }
     return vec[index];
 }
 

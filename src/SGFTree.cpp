@@ -350,6 +350,12 @@ int SGFTree::string_to_vertex(const std::string& movestring) const {
         throw std::runtime_error("Node has 0 sized board");
     }
 
+    if (movestring.size() < 2) {
+        // Malformed coordinate (single char would read past the string and
+        // silently map to a wrong vertex).
+        throw std::runtime_error("Illegal SGF move");
+    }
+
     char c1 = movestring[0];
     char c2 = movestring[1];
 

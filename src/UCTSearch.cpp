@@ -415,6 +415,63 @@ void UCTSearch::tree_stats(const UCTNode& node) {
     }
 }
 
+// PhoenixGo GetSearchTimeoutUs (mcts_engine.cc:670-705), in centiseconds.
+// The LZ TimeControl clock (driven by GTP time_settings/time_left) plays the
+// role of PG's ByoYomiTimer; the cfg_time_control_* globals are
+// MCTSConfig::time_control. Note the base time is already shrunk by
+// overtime_factor so that Search() can add unstable/behind overtime on top
+// without exceeding the clock.
+int UCTSearch::get_pg_timeout_centis(const int color) const {
+    auto timeout = -1;
+    const auto& tc = m_rootstate.get_timecontrol();
+    if (cfg_time_control_enable) {
+        auto overtime_factor = 1.0f;
+        if (cfg_unstable_overtime_enable) {
+            overtime_factor = std::max(
+                overtime_factor, 1.0f + cfg_unstable_overtime_time_factor);
+        }
+        if (cfg_behind_overtime_enable) {
+            overtime_factor = std::max(
+                overtime_factor, 1.0f + cfg_behind_overtime_time_factor);
+        }
+        const auto movenum = static_cast<int>(m_rootstate.get_movenum());
+        const auto remain_time = tc.remaining_time(color) / 100.0f;
+        const auto byo_time = tc.byo_time() / 100.0f;
+        float think_time;
+        if (remain_time > 0) {
+            think_time = remain_time
+                / (cfg_time_control_c_denom
+                   + std::max(cfg_time_control_c_maxply - movenum, 0));
+            think_time = std::min(
+                think_time,
+                (remain_time - cfg_time_control_reserved_time) / overtime_factor);
+            if (movenum >= cfg_time_control_byo_after) {
+                think_time = std::max(
+                    think_time,
+                    (byo_time - cfg_time_control_reserved_time) / overtime_factor);
+            }
+        } else {
+            think_time =
+                (byo_time - cfg_time_control_reserved_time) / overtime_factor;
+        }
+        think_time = std::max(think_time, cfg_time_control_min_time);
+        timeout = static_cast<int>(think_time * 100.0f);
+    }
+    if (cfg_timeout_ms_per_step > 0) {
+        const auto cap = cfg_timeout_ms_per_step / 10;  // ms -> centis
+        if (timeout == -1 || cap < timeout) {
+            timeout = cap;
+        }
+    }
+    if (timeout == -1) {
+        // No time control configured at all: keep the LZ budget so the search
+        // always has a finite time_for_move.
+        timeout = m_rootstate.get_timecontrol().max_time_for_move(
+            m_rootstate.board.get_boardsize(), color, m_rootstate.get_movenum());
+    }
+    return timeout;
+}
+
 bool UCTSearch::should_resign(const passflag_t passflag, const float besteval) {
     if (passflag & UCTSearch::NORESIGN) {
         // resign not allowed
@@ -487,20 +544,39 @@ int UCTSearch::get_best_move(const passflag_t passflag) {
     m_root->sort_children(color, cfg_lcb_min_visit_ratio * max_visits);
 
     // 温度采样对齐 AlphaGo Zero 论文：
-    //   对弈模式 (cfg_random_temp=0.1, cfg_random_cnt=999999): 全程近贪婪（visits^10 近乎 argmax）
-    //   训练模式 (cfg_random_temp=1.0, cfg_random_cnt=30): 前30手T=1.0探索，第31手起转贪婪
+    //   对弈模式 (cfg_random_cnt=0): 不采样，直接选最大访问量手（argmax）
+    //   训练模式 (cfg_noise=true, cfg_random_temp=1.0, cfg_random_cnt=30):
+    //     前30手T=1.0探索，第31手起转贪婪
     // 论文: "MCTS plays at temperature T=1 for first 30 moves, then T≈0 (argmax)"
     auto movenum = int(m_rootstate.get_movenum());
     if (movenum < cfg_random_cnt) {
         m_root->randomize_first_proportionally();
     }
 
-    auto first_child = m_root->get_first_child();
-    assert(first_child != nullptr);
+    UCTNode* best;
+    if (movenum < cfg_random_cnt) {
+        // Temperature sampling already moved the pick to the front.
+        best = m_root->get_first_child();
+    } else {
+        // PhoenixGo get_best_move_mode=0 (mcts_engine.cc GetBestMove):
+        // pick the child with the most visits. Do NOT use the LCB sort for
+        // the actual selection, or close races would pick the LCB-best move
+        // instead of the visit leader like PG does.
+        best = nullptr;
+        auto best_visits = -1;
+        for (const auto& node : m_root->get_children()) {
+            const auto visits = node.get_visits();
+            if (visits > best_visits) {
+                best_visits = visits;
+                best = node.get();
+            }
+        }
+        assert(best != nullptr);
+    }
 
-    auto bestmove = first_child->get_move();
+    auto bestmove = best->get_move();
     auto besteval =
-        first_child->first_visit() ? 0.5f : first_child->get_raw_eval(color);
+        best->first_visit() ? 0.5f : best->get_raw_eval(color);
 
     // do we want to fiddle with the best move because of the rule set?
     if (passflag & UCTSearch::NOPASS) {
@@ -880,8 +956,7 @@ int UCTSearch::think(const int color, const passflag_t passflag) {
     // set side to move
     m_rootstate.board.set_to_move(color);
 
-    auto time_for_move = m_rootstate.get_timecontrol().max_time_for_move(
-        m_rootstate.board.get_boardsize(), color, m_rootstate.get_movenum());
+    auto time_for_move = get_pg_timeout_centis(color);
 
     myprintf("Thinking at most %.1f seconds...\n", time_for_move / 100.0f);
 
@@ -938,10 +1013,13 @@ int UCTSearch::think(const int color, const passflag_t passflag) {
 
         // PhoenixGo: early stop check every check_every_ms
         // (see PhoenixGo mcts_engine.cc:751-763 SearchWait)
+        // NOTE: elapsed_centis is in centiseconds, cfg_early_stop_check_every_ms
+        // is in milliseconds — convert elapsed to ms before comparing, otherwise
+        // the check would fire 10x too slowly (every 1s instead of every 100ms).
         if (cfg_early_stop_enable
-            && elapsed_centis - last_early_stop_check
+            && elapsed_centis * 10 - last_early_stop_check
                    >= cfg_early_stop_check_every_ms) {
-            last_early_stop_check = elapsed_centis;
+            last_early_stop_check = elapsed_centis * 10;
             if (check_early_stop(total_time, elapsed_centis)) {
                 keeprunning = false;
                 break;
@@ -984,13 +1062,6 @@ int UCTSearch::think(const int color, const passflag_t passflag) {
     myprintf("%d visits, %d nodes, %d playouts, %.0f n/s\n\n",
              m_root->get_visits(), m_nodes.load(), m_playouts.load(),
              (m_playouts * 100.0) / (elapsed_centis + 1));
-
-#ifdef USE_OPENCL
-#ifndef NDEBUG
-    myprintf("batch stats: %d %d\n",
-             batch_stats.single_evals.load(), batch_stats.batch_evals.load());
-#endif
-#endif
 
     int bestmove = get_best_move(passflag);
 

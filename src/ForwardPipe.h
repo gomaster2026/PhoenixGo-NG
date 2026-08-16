@@ -55,6 +55,15 @@ public:
         std::vector<float> m_bn_trunk_means;
         std::vector<float> m_bn_trunk_stddevs;
 
+        // True when the input convolution has a real (non-identity) batch
+        // norm after it. PhoenixGo's 20b-v1 graph is conv+bias with NO input
+        // BN (the v3 text file then carries identity gamma/beta/mean/var for
+        // the missing BN), while the tfprocess.py / kaggle_go_ai.py training
+        // graphs insert a real input BN. The forward pass must apply BN[0]
+        // only in the latter case (and the input-conv bias fold in
+        // Network::initialize targets BN[0] vs. the residual BNs accordingly).
+        bool m_input_has_bn{true};
+
         // Policy head
         std::vector<float> m_conv_pol_w;
         std::vector<float> m_conv_pol_b;
@@ -72,12 +81,30 @@ public:
     virtual void forward(const std::vector<float>& input,
                          std::vector<float>& output_pol,
                          std::vector<float>& output_val) = 0;
+
+    // Evaluate a batch of inputs in a single forward pass (KataGo-style
+    // batching). The CPU pipe keeps batching off and evaluates each input
+    // independently; GPU backends override this to run the whole batch on the
+    // device and report supports_batching() == true so Network routes eval
+    // requests through its batch queue.
+    virtual void forward_batch(
+        const std::vector<const std::vector<float>*>& inputs,
+        std::vector<std::vector<float>>& output_pol,
+        std::vector<std::vector<float>>& output_val) = 0;
+
+    virtual bool supports_batching() const {
+        return false;
+    }
+    // Maximum number of positions a single forward_batch() call may take.
+    // Backends with fixed-size scratch buffers (OpenCL) return their limit;
+    // the eval queue clamps --batchsize to this so a too-large batch cannot
+    // overflow the buffers. Pipes that don't batch never get queried.
+    virtual size_t max_batch_size() const {
+        return 1;
+    }
     virtual void push_weights(
         unsigned int filter_size, unsigned int channels, unsigned int outputs,
         std::shared_ptr<const ForwardPipeWeights> weights) = 0;
-
-    virtual void drain() {}
-    virtual void resume() {}
 };
 
 #endif

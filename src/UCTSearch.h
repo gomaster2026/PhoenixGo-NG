@@ -135,6 +135,10 @@ private:
     // PhoenixGo time management (see PhoenixGo mcts_engine.cc:583-720)
     // CheckEarlyStop: stop early if best move's visit lead > remaining sims
     bool check_early_stop(int time_for_move_centis, int elapsed_centis);
+    // PhoenixGo GetSearchTimeoutUs (mcts_engine.cc:670-705), in centiseconds.
+    // Uses the LZ TimeControl clock (GTP time_settings/time_left) as the
+    // byo-yomi timer and cfg_time_control_* as MCTSConfig::time_control.
+    int get_pg_timeout_centis(const int color) const;
     // CheckUnstable: true if most-visited child != highest-Q child
     bool check_unstable();
     // CheckBehind: true if best move's winrate < act_threshold (0.5 in LZ scale)

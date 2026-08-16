@@ -71,12 +71,20 @@ class GTPEngine:
 
         resp = self._command("protocol_version", timeout=30)
         if resp is None:
-            self.close()
+            # Kill the child first so stderr reaches EOF. Reading stderr of a
+            # live-but-stuck child (self.proc.stderr.read()) would block
+            # forever and hang the whole node.
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=3)
+            except Exception:
+                pass
             stderr_tail = ""
             try:
                 stderr_tail = self.proc.stderr.read()[-500:]
             except Exception:
                 pass
+            self.close()
             raise RuntimeError(
                 f"leelaz 启动失败 (GTP 无响应)\n"
                 f"  命令: {' '.join(cmd)}\n"
@@ -84,8 +92,36 @@ class GTPEngine:
                 f"  stderr: ...{stderr_tail}"
             )
 
+    @staticmethod
+    def _parse_response(lines):
+        """把 GTP 响应行列表转成去掉 '= ' 前缀的结果。"""
+        if not lines:
+            return None
+        first = lines[0]
+        if first.startswith("?"):
+            return None
+        if first.startswith("= "):
+            lines[0] = first[2:]
+        elif first.startswith("="):
+            lines[0] = first[1:]
+        return lines
+
+    def _drain_stdout(self):
+        """超时后尽力排空 stdout 残留，防止下次命令读到旧数据导致协议错位。
+
+        Windows 管道无法做真正非阻塞读取；若子进程仍存活则无法安全排空，
+        此时调用方必须把引擎视为不可用（重启进程）。
+        """
+        if self.proc.poll() is None:
+            return
+        try:
+            while self.proc.stdout.readline():
+                pass
+        except Exception:
+            pass
+
     def _command(self, cmd_text, timeout=60):
-        """发送 GTP 命令 → 返回响应行列表"""
+        """发送 GTP 命令 → 返回响应行列表；超时或引擎失败返回 None"""
         try:
             self.proc.stdin.write(cmd_text + "\n")
             self.proc.stdin.flush()
@@ -103,19 +139,13 @@ class GTPEngine:
                 continue
             line = line.rstrip("\n\r")
             if line == "":
-                break
+                # 收到终止空行，响应完整
+                return self._parse_response(lines)
             lines.append(line)
 
-        if not lines:
-            return None
-        first = lines[0]
-        if first.startswith("?"):
-            return None
-        if first.startswith("= "):
-            lines[0] = first[2:]
-        elif first.startswith("="):
-            lines[0] = first[1:]
-        return lines
+        # 超时：响应不完整，协议状态不可信
+        self._drain_stdout()
+        return None
 
     def clear_board(self):
         return self._command("clear_board", timeout=5)
@@ -166,7 +196,11 @@ def play_one_game(engine, game_id, work_dir):
     用 GTP 驱动一局自对弈。
     返回 (winner, num_moves, train_file_path, sgf_file_path, error)
     """
-    engine.clear_board()
+    # clear_board 失败（超时/引擎无响应）时管道里残留旧响应，
+    # 后续 genmove 会读到错位数据导致整局棋盘失同步 —— 按失败处理，
+    # 由调用方重启引擎（与 genmove 超时的处理一致）。
+    if engine.clear_board() is None:
+        return "?", 0, None, None, "clear_board timeout"
     time.sleep(0.2)
 
     moves = 0
@@ -337,6 +371,14 @@ def main():
             if err:
                 print(f"  #{g}/{args.games} 失败: {err}")
                 failed += 1
+                # 引擎 GTP 协议状态可能已错位（命令超时残留），重启以恢复
+                engine.close()
+                try:
+                    engine = GTPEngine(args.leelaz, str(weights_path),
+                                       args.playouts, seed, work_dir)
+                except Exception as e:
+                    print(f"错误: 引擎重启失败: {e}")
+                    break
                 continue
             total_moves += moves_cnt
             print(f"  #{g}/{args.games} {moves_cnt}手 胜者={winner} {elapsed:.0f}s")

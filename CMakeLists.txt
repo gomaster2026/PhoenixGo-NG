@@ -14,7 +14,6 @@
 
 cmake_minimum_required(VERSION 3.5)
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/Modules/")
 include(GNUInstallDirs)
 
 project(leelaz)
@@ -22,11 +21,25 @@ project(leelaz)
 # Required Packages
 set(Boost_MIN_VERSION "1.58.0")
 set(Boost_USE_MULTITHREADED ON)
+# Force static Boost libraries on Windows (link .a not .dll.a)
+if(WIN32)
+  set(Boost_USE_STATIC_LIBS ON)
+endif()
 find_package(Boost 1.58.0 REQUIRED program_options filesystem)
 find_package(Threads REQUIRED)
+# Force static zlib: prefer libz.a over libz.dll.a
+if(WIN32)
+  set(ZLIB_USE_STATIC_LIBS ON)
+endif()
 find_package(ZLIB REQUIRED)
 if(NOT USE_CPU_ONLY)
-  find_package(OpenCL REQUIRED)
+  # OpenCL is optional in this tree: OpenCLScheduler is a CPUPipe stub, so the
+  # engine works fine without an OpenCL SDK. Fall back to CPU-only when missing.
+  find_package(OpenCL QUIET)
+  if(NOT OpenCL_FOUND)
+    message(WARNING "OpenCL not found - falling back to CPU-only build.")
+    set(USE_CPU_ONLY 1)
+  endif()
 endif()
 # We need OpenBLAS for now, because we make some specific
 # calls. Ideally we'd use OpenBLAS is possible and fall back to
@@ -49,6 +62,11 @@ if(USE_BLAS)
     D:/msys64/mingw64/include/openblas
     $ENV{BLAS_HOME}/include)
     add_definitions(-DUSE_BLAS)
+    if(WIN32)
+      # Prefer the static OpenBLAS archive (libopenblas.a) over the import
+      # library, so the resulting exe stays self-contained (no libopenblas.dll).
+      list(TRANSFORM BLAS_LIBRARIES REPLACE "[.]dll[.]a$" ".a")
+    endif()
 else()
 message(STATUS "Using built-in matrix library.")
 endif()
@@ -81,7 +99,16 @@ if(GccSpecificFlags)
   set(GCC_FLAGS "${GCC_COMPILE_FLAGS} ${GCC_DISABLED_WARNING_COMPILE_FLAGS}")
   set(CMAKE_CXX_FLAGS_DEBUG "${GCC_FLAGS} -g -Og")
   set(CMAKE_CXX_FLAGS_RELEASE "${GCC_FLAGS} -g -O3 -DNDEBUG")
-  set(CMAKE_EXE_LINKER_FLAGS "-Wl,--allow-multiple-definition -g")
+  # Static linking: link mingw runtime, zlib, and boost as static libraries
+  # so the resulting exe has zero external DLL dependencies.
+  set(CMAKE_EXE_LINKER_FLAGS "-Wl,--allow-multiple-definition -g \
+      -static -static-libgcc -static-libstdc++")
+  if(WIN32 AND USE_BLAS)
+    # The MSYS2 static OpenBLAS is built against OpenMP; link libgomp
+    # statically as well. OpenBLAS itself is pinned to one thread via
+    # openblas_set_num_threads(1) in Network.cpp.
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fopenmp")
+  endif()
 endif(GccSpecificFlags)
 
 if(USE_CPU_ONLY)
@@ -97,7 +124,15 @@ set(SrcPath "${CMAKE_CURRENT_SOURCE_DIR}/src")
 include_directories(${IncludePath})
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
-  include_directories(${EIGEN3_INCLUDE_DIR})
+  if(TARGET Eigen3::Eigen)
+    # 现代 config 模式: 不设置 EIGEN3_INCLUDE_DIR, 需从 imported target 取
+    get_target_property(EIGEN3_INCLUDE_DIRS Eigen3::Eigen
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    include_directories(${EIGEN3_INCLUDE_DIRS})
+  else()
+    # 旧 FindEigen3 模块模式
+    include_directories(${EIGEN3_INCLUDE_DIR})
+  endif()
 else()
   include_directories(${CMAKE_SOURCE_DIR}/src/Eigen)
 endif()
@@ -136,32 +171,38 @@ target_link_libraries(leelaz ${CMAKE_THREAD_LIBS_INIT})
 install(TARGETS leelaz DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(Qt5Core_FOUND)
-    if(NOT Qt5Core_VERSION VERSION_LESS "5.3.0")
+    # The validation GUI is not part of this tree; only build it if the
+    # directory actually exists (upstream shipped it, this port does not).
+    if(NOT Qt5Core_VERSION VERSION_LESS "5.3.0"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/validation/CMakeLists.txt")
         add_subdirectory(validation)
     else()
-        message(WARNING "Qt ${Qt5Core_VERSION} is found but does not met required version 5.3.0, \
-        build target for `validation` is disabled.")
+        message(WARNING "validation/ not present, build for `validation` is disabled")
     endif()
 else()
     message(WARNING "Qt is not found, build for `validation` is disabled")
 endif()
 
-# Google Test below
-find_package(GTest REQUIRED)
+# Google Test below (optional - only built when GTest is available)
+find_package(GTest QUIET)
 file(GLOB tests_SRC "${SrcPath}/tests/*.cpp")
 
-add_executable(tests ${tests_SRC} $<TARGET_OBJECTS:objs>)
-if(GccSpecificFlags)
-  target_compile_options(tests PRIVATE "-Wno-unused-variable")
-endif()
+if(GTest_FOUND AND tests_SRC)
+  enable_testing()
+  add_executable(tests ${tests_SRC} $<TARGET_OBJECTS:objs>)
+  if(GccSpecificFlags)
+    target_compile_options(tests PRIVATE "-Wno-unused-variable")
+  endif()
 
-target_link_libraries(tests ${Boost_LIBRARIES})
-target_link_libraries(tests ${BLAS_LIBRARIES})
-if(NOT USE_CPU_ONLY)
-  target_link_libraries(tests ${OpenCL_LIBRARIES})
+  target_link_libraries(tests ${Boost_LIBRARIES})
+  target_link_libraries(tests ${BLAS_LIBRARIES})
+  if(NOT USE_CPU_ONLY)
+    target_link_libraries(tests ${OpenCL_LIBRARIES})
+  endif()
+  target_link_libraries(tests ${ZLIB_LIBRARIES})
+  target_link_libraries(tests GTest::gtest_main ${CMAKE_THREAD_LIBS_INIT})
+  add_test(NAME leelaz_tests COMMAND tests)
 endif()
-target_link_libraries(tests ${ZLIB_LIBRARIES})
-target_link_libraries(tests GTest::gtest_main ${CMAKE_THREAD_LIBS_INIT})
 
 set(VERSION "v0.17.1")
 set(MAJOR_VERSION "0")

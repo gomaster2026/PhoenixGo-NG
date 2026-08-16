@@ -33,10 +33,15 @@
 #include "config.h"
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -47,9 +52,6 @@
 #endif
 #include "ForwardPipe.h"
 #include "GameState.h"
-#ifdef USE_OPENCL
-#include "OpenCLScheduler.h"
-#endif
 #ifdef USE_OPENCL_SELFCHECK
 #include "SMP.h"
 #endif
@@ -78,7 +80,7 @@ public:
     using PolicyVertexPair = std::pair<float, int>;
     using Netresult = NNCache::Netresult;
 
-    virtual ~Network() = default;
+    virtual ~Network();
 
     Netresult get_output(const GameState* state, Ensemble ensemble,
                          int symmetry = -1, bool read_cache = true,
@@ -125,9 +127,6 @@ private:
 
     static std::vector<float> winograd_transform_f(const std::vector<float>& f,
                                                    int outputs, int channels);
-    static std::vector<float> zeropad_U(const std::vector<float>& U,
-                                        int outputs, int channels,
-                                        int outputs_pad, int channels_pad);
     static void winograd_transform_in(const std::vector<float>& in,
                                       std::vector<float>& V, int C);
     static void winograd_transform_out(const std::vector<float>& M,
@@ -158,6 +157,31 @@ private:
     void compare_net_outputs(const Netresult& data, const Netresult& ref);
     std::unique_ptr<ForwardPipe> m_forward_cpu;
 #endif
+
+    // Batch evaluation queue (KataGo-style batching). When the active pipe
+    // reports supports_batching(), eval requests from the search threads are
+    // gathered by a dedicated eval thread and run as one forward pass per
+    // batch; CPU-only builds keep the direct (parallel) forward path instead.
+    struct EvalRequest {
+        std::vector<float> input;
+        std::promise<std::pair<std::vector<float>, std::vector<float>>> result;
+    };
+    std::mutex m_eval_mutex;
+    std::condition_variable m_eval_cv;
+    std::deque<EvalRequest> m_eval_queue;
+    // Set from --batchsize (clamped to the backend's max) in initialize();
+    // this fallback is used if the pipe reports no batching support.
+    std::size_t m_eval_batch_size{8};
+    std::thread m_eval_thread;
+    std::atomic<bool> m_eval_running{false};
+    // While set (drain_evals), new eval submissions throw
+    // NetworkHaltException; requests already in the queue are still served
+    // so blocked search threads never hang. See drain_evals()/resume_evals().
+    std::atomic<bool> m_eval_drain{false};
+    void eval_thread_loop();
+    void forward_queued(const std::vector<float>& input,
+                        std::vector<float>& output_pol,
+                        std::vector<float>& output_val);
 
     NNCache m_nncache;
 

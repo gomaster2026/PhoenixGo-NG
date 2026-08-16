@@ -106,6 +106,9 @@ bool cfg_time_control_enable;
 int cfg_time_control_c_denom;
 int cfg_time_control_c_maxply;
 float cfg_time_control_reserved_time;
+float cfg_time_control_min_time;
+int cfg_time_control_byo_after;
+int cfg_timeout_ms_per_step;
 std::string cfg_weightsfile;
 std::string cfg_logfile;
 FILE* cfg_logfile_handle;
@@ -392,13 +395,23 @@ void GTP::setup_default_parameters() {
     cfg_behind_overtime_act_threshold = 0.0f;
     cfg_behind_overtime_time_factor = 0.3f;
     // time_control: enable=1, c_denom=20, c_maxply=40, reserved_time=1.0
+    // (matches PhoenixGo etc/mcts_cpu.conf). min_time/byo_yomi_after keep the
+    // proto defaults (0); timeout_ms_per_step=5000 matches the shipped conf.
     cfg_time_control_enable = true;
     cfg_time_control_c_denom = 20;
     cfg_time_control_c_maxply = 40;
     cfg_time_control_reserved_time = 1.0f;
-    cfg_random_cnt = 999999;  // 对弈模式始终启用温度采样（温度0.1近贪婪）；训练模式在 Leela.cpp 覆盖为30
+    cfg_time_control_min_time = 0.0f;
+    cfg_time_control_byo_after = 0;
+    cfg_timeout_ms_per_step = 5000;
+    // 对弈模式默认不做温度采样：get_best_move 直接选最大访问量手（argmax）。
+    // 温度 0.1 看似"近贪婪"，但当第一/第二手访问量接近时（如 1000 vs 900，
+    // 指数 1/0.1=10 → 权重 0.9^10≈0.35）第二手仍会被以 ~26% 概率选中，
+    // 表现为随机出现的怪招。温度采样只在训练模式（--noise）启用，
+    // 由 Leela.cpp 覆盖为 cnt=30 / temp=1.0。
+    cfg_random_cnt = 0;
     cfg_random_min_visits = 1;
-    cfg_random_temp = 0.1f;  // 对弈模式默认温度0.1（近贪婪）；训练模式在 Leela.cpp 覆盖为1.0
+    cfg_random_temp = 0.1f;  // 训练模式 --noise 时在 Leela.cpp 覆盖为1.0
     // PhoenixGo: cfg_dumbpass=true to skip LZ's relative_score post-processing
     // in get_best_move (see PhoenixGo mcts_engine.cc GetBestMove).
     // PG picks best move by visit_count only (get_best_move_mode=0), no
@@ -476,6 +489,14 @@ const std::string GTP::s_options[] = {
     "option name Lagbuffer type spin default 0 min 0 max 3000",
     "option name Resign Percentage type spin default -1 min -1 max 30",
     "option name Pondering type check default true",
+    // PhoenixGo time control (mcts_config.proto / etc/mcts_cpu.conf)
+    "option name PG Time Control type check default true",
+    "option name PG Time Control C Denom type spin default 20 min 1 max 1000",
+    "option name PG Time Control C Maxply type spin default 40 min 0 max 1000",
+    "option name PG Time Control Reserved Time type spin default 100 min 0 max 60000",
+    "option name PG Time Control Min Time type spin default 0 min 0 max 60000",
+    "option name PG Time Control Byo Yomi After type spin default 0 min 0 max 1000",
+    "option name PG Timeout Ms Per Step type spin default 5000 min 0 max 3600000",
     ""
 };
 
@@ -1457,6 +1478,79 @@ void GTP::execute_setoption(UCTSearch& search, const int id,
         valuestream >> resignpct;
         cfg_resignpct = resignpct;
         gtp_printf(id, "");
+    } else if (name == "pg time control") {
+        std::istringstream valuestream(value);
+        std::string toggle;
+        valuestream >> toggle;
+        if (toggle == "true") {
+            cfg_time_control_enable = true;
+            gtp_printf(id, "");
+        } else if (toggle == "false") {
+            cfg_time_control_enable = false;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
+    } else if (name == "pg time control c denom") {
+        std::istringstream valuestream(value);
+        int v;
+        valuestream >> v;
+        if (!valuestream.fail() && v >= 1) {
+            cfg_time_control_c_denom = v;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
+    } else if (name == "pg time control c maxply") {
+        std::istringstream valuestream(value);
+        int v;
+        valuestream >> v;
+        if (!valuestream.fail() && v >= 0) {
+            cfg_time_control_c_maxply = v;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
+    } else if (name == "pg time control reserved time") {
+        std::istringstream valuestream(value);
+        float v;
+        valuestream >> v;
+        if (!valuestream.fail() && v >= 0) {
+            cfg_time_control_reserved_time = v / 100.0f;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
+    } else if (name == "pg time control min time") {
+        std::istringstream valuestream(value);
+        float v;
+        valuestream >> v;
+        if (!valuestream.fail() && v >= 0) {
+            cfg_time_control_min_time = v / 100.0f;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
+    } else if (name == "pg time control byo yomi after") {
+        std::istringstream valuestream(value);
+        int v;
+        valuestream >> v;
+        if (!valuestream.fail() && v >= 0) {
+            cfg_time_control_byo_after = v;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
+    } else if (name == "pg timeout ms per step") {
+        std::istringstream valuestream(value);
+        int v;
+        valuestream >> v;
+        if (!valuestream.fail() && v >= 0) {
+            cfg_timeout_ms_per_step = v;
+            gtp_printf(id, "");
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+        }
     } else {
         gtp_fail_printf(id, "Unknown option");
     }

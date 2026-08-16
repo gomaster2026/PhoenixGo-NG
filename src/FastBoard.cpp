@@ -435,7 +435,8 @@ std::string FastBoard::move_to_text(const int move) const {
     assert(move == FastBoard::PASS || move == FastBoard::RESIGN
            || (column >= 0 && column < m_boardsize));
 
-    if (move >= 0 && move <= m_numvertices) {
+    if (move > 0 && move < m_numvertices && row >= 0 && row < m_boardsize
+        && column >= 0 && column < m_boardsize) {
         result << static_cast<char>(column < 8 ? 'A' + column
                                                : 'A' + column + 1);
         result << (row + 1);

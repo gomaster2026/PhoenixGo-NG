@@ -38,6 +38,7 @@
 #include <iterator>
 #include <limits>
 #include <numeric>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -122,22 +123,33 @@ bool UCTNode::create_children(Network& network, std::atomic<int>& nodecount,
     // PG: dumb_pass = (board.GetWinner() != board.CurrentPlayer())
     // PG: if (dumb_pass && value < 0.5 && !disable_double_pass_scoring)
     // PG:     policy.back() = std::min(policy.back(), 1e-5f)
-    // LZ: stm_eval is current player's winrate in [0,1] (>=0.5 means winning).
-    //     state.final_score() returns board score (black - white).
-    //     relative_score < 0 means current player is behind on board score,
-    //     equivalent to PG's "passing would lose" (dumb_pass=true).
+    // The `value` PG tests is the model's Forward() output, which is the
+    // NEGATED raw value tensor (zero_model.cc: value = -value_tensor). With
+    // stm_eval = (1 + value_tensor)/2 in [0,1], PG's condition
+    //   dumb_pass && -value_tensor < 0.5
+    // becomes dumb_pass && stm_eval > 0.25: suppress PASS when the net still
+    // thinks the current player is not clearly lost but the board score says
+    // they are behind (passing would throw away the game).
+    // (LZ's stm_eval is the current player's winrate in [0,1]; final_score()
+    // returns the black-white area score, so relative_score < 0 means the
+    // current player is behind on the board — equivalent to PG's dumb_pass.)
     const auto relative_score_pg =
         (to_move == FastBoard::BLACK ? 1 : -1) * state.final_score();
-    if (stm_eval < 0.5f && relative_score_pg < 0.0f) {
+    if (stm_eval > 0.25f && relative_score_pg < 0.0f) {
         pass_policy = std::min(pass_policy, 1e-5f);
     }
     nodelist.emplace_back(pass_policy, FastBoard::PASS);
     legal_sum += pass_policy;
 
-    // PhoenixGo: max_children_per_node=64 hard limit (see PhoenixGo mcts_engine.cc:532-537)
-    // PG uses nth_element to keep top-64 children by policy, then normalizes
-    // with the truncated sum. We sort descending and truncate before normalization.
-    // This makes PG子树更窄但每分支更深 (focus on top candidates).
+    // PhoenixGo-style cap on the number of children expanded per node, to keep
+    // the tree from exploding when there are many legal moves.
+    // NOTE: PG (mcts_engine.cc:544-552) computes the prior as
+    // policy[move] / policy_sum with policy_sum accumulated over ALL legal
+    // moves + PASS *before* the truncation, so the retained top-64 children
+    // keep their original (pre-truncation) normalized priors, which sum to < 1.
+    // Do the same: keep legal_sum as the full sum (do NOT renormalize over the
+    // retained children), or the PUCT exploration term would be stronger than
+    // PG's.
     constexpr auto PG_MAX_CHILDREN_PER_NODE = 64;
     if (nodelist.size() > PG_MAX_CHILDREN_PER_NODE) {
         std::partial_sort(begin(nodelist),
@@ -147,11 +159,6 @@ bool UCTNode::create_children(Network& network, std::atomic<int>& nodecount,
                               return a.first > b.first;
                           });
         nodelist.resize(PG_MAX_CHILDREN_PER_NODE);
-        // Recompute legal_sum after truncation (PG normalizes with truncated sum)
-        legal_sum = 0.0f;
-        for (const auto& node : nodelist) {
-            legal_sum += node.first;
-        }
     }
 
     if (legal_sum > std::numeric_limits<float>::min()) {
@@ -281,7 +288,13 @@ float UCTNode::get_eval_lcb(const int color) const {
     }
     auto mean = get_raw_eval(color);
 
-    auto stddev = std::sqrt(get_eval_variance(1.0f) / visits);
+    // The Welford variance is accumulated in floating point and can drift
+    // slightly negative when the true value is ~0. sqrt(negative) then
+    // yields NaN (or garbage under -ffast-math), and comparing NaNs inside
+    // NodeComp violates strict weak ordering, which can make the sort pick
+    // an arbitrary "best" move. Clamp like KataGo does.
+    auto stddev =
+        std::sqrt(std::max(0.0f, get_eval_variance(1.0f)) / visits);
     auto z = cached_t_quantile(visits - 1);
 
     return mean - z * stddev;
@@ -514,7 +527,11 @@ void UCTNode::expand_cancel() {
     assert(v == ExpandState::EXPANDING);
 }
 void UCTNode::wait_expanded() const {
-    while (m_expand_state.load() == ExpandState::EXPANDING) {}
+    // Spin-wait with yield to avoid burning a core while another thread
+    // expands this node.
+    while (m_expand_state.load() == ExpandState::EXPANDING) {
+        std::this_thread::yield();
+    }
     auto v = m_expand_state.load();
 #ifdef NDEBUG
     (void)v;

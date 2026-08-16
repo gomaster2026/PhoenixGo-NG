@@ -48,6 +48,17 @@ public:
     void start(int color);
     void stop(int color);
     int max_time_for_move(int boardsize, int color, size_t movenum) const;
+    // PhoenixGo time control: raw clock values (centiseconds) used by
+    // UCTSearch::get_pg_timeout_centis (mcts_engine.cc GetSearchTimeoutUs).
+    int remaining_time(int color) const {
+        return m_remaining_time[color];
+    }
+    int byo_time() const {
+        return m_byotime;
+    }
+    bool in_byo(int color) const {
+        return m_inbyo[color];
+    }
     void adjust_time(int color, int time, int stones);
     void display_times();
     void reset_clocks();
