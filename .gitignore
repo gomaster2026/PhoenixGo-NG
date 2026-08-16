@@ -6,6 +6,7 @@ CMakeCache.txt
 cmake_install.cmake
 Makefile
 build/
+build_opencl/
 *.o
 *.obj
 *.a
@@ -16,3 +17,6 @@ build/
 *.tmp
 *.swp
 .DS_Store
+training/tf/leelalogs/
+*.tfevents.*
+training/tf/networks/
